@@ -3,6 +3,8 @@ import time
 import json
 import base64
 import smtplib
+import random
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
@@ -66,6 +68,10 @@ def init_session_state():
     if "current_user" not in st.session_state:
         st.session_state.current_user = None
 
+    # 手機 OTP 驗證暫存區：Demo 版存在 session_state；正式版建議改成 Redis/DB 並設定過期時間。
+    if "otp_store" not in st.session_state:
+        st.session_state.otp_store = {}
+
     if "users" not in st.session_state:
         st.session_state.users = [
             {
@@ -124,6 +130,11 @@ def init_session_state():
                 "proof": "企業統編 + demo 白名單",
             },
         ]
+
+    # 補齊舊資料欄位，避免新增手機驗證後舊 demo 帳號缺欄位。
+    for u in st.session_state.users:
+        u.setdefault("phone", "")
+        u.setdefault("phone_verified", True if u.get("id") in ["U_ADMIN", "U_GOV_001", "U_GOV_002", "U_CIT_001", "U_COM_001"] else False)
 
     if "demands" not in st.session_state:
         st.session_state.demands = [
@@ -295,6 +306,55 @@ def can_gov_review(gov_user, record):
 
 def badge_text(status):
     return VERIFY_BADGE.get(status, "⚪ 未認證")
+
+
+def normalize_phone(phone):
+    """簡易手機格式整理：保留 + 與數字，Demo 可支援 09xx 或 +886。"""
+    phone = str(phone or "").strip()
+    phone = re.sub(r"[^0-9+]", "", phone)
+    return phone
+
+
+def is_valid_phone(phone):
+    phone = normalize_phone(phone)
+    # 台灣手機常見：09xxxxxxxx；也允許國際格式 +8869xxxxxxxx
+    return bool(re.match(r"^09\d{8}$", phone) or re.match(r"^\+8869\d{8}$", phone))
+
+
+def send_phone_otp(phone):
+    """
+    Demo OTP：產生 6 碼驗證碼並寫入 session_state 與通知中心。
+    正式部署若要真的傳 SMS，可串 Twilio/三竹/中華電信簡訊 API。
+    """
+    phone = normalize_phone(phone)
+    otp = f"{random.randint(0, 999999):06d}"
+    st.session_state.otp_store[phone] = {
+        "otp": otp,
+        "created_at": datetime.now(),
+        "expires_at": datetime.now() + timedelta(minutes=5),
+        "verified": False,
+        "attempts": 0,
+    }
+    add_notification(f"📱 Demo OTP 已傳送至 {phone}，驗證碼：{otp}（5 分鐘內有效）", "otp")
+    add_audit("發送手機 OTP", f"phone={phone}")
+    return otp
+
+
+def verify_phone_otp(phone, otp_input):
+    phone = normalize_phone(phone)
+    otp_input = str(otp_input or "").strip()
+    record = st.session_state.otp_store.get(phone)
+    if not record:
+        return False, "尚未發送 OTP，請先按『發送手機 OTP』。"
+    if datetime.now() > record.get("expires_at"):
+        return False, "OTP 已過期，請重新發送。"
+    record["attempts"] = int(record.get("attempts", 0)) + 1
+    if record["attempts"] > 5:
+        return False, "嘗試次數過多，請重新發送 OTP。"
+    if otp_input != record.get("otp"):
+        return False, "OTP 驗證碼不正確。"
+    record["verified"] = True
+    return True, "手機號碼已完成 OTP 驗證。"
 
 # =========================================================
 # 2. Email / 通知
@@ -731,7 +791,7 @@ def submit_claim(demand, supply, claim_qty, note):
 # =========================================================
 def login_panel():
     st.title("🧩 ResQ-Link 可信任災害資源分配平台")
-    st.caption("請先選擇登入身分。Demo 版不需密碼，正式版可串接資料庫與 OAuth。")
+    st.caption("請先選擇登入身分。Demo 版不需密碼；註冊時會加入手機號碼與 OTP 驗證流程。")
 
     col1, col2, col3, col4 = st.columns(4)
     role_cards = [
@@ -750,36 +810,70 @@ def login_panel():
     if not users:
         st.warning("此角色目前沒有可登入帳號，請先註冊。")
     else:
-        selected_user_id = st.selectbox("選擇 Demo 帳號", [u["id"] for u in users], format_func=lambda uid: next(u["name"] for u in users if u["id"] == uid))
+        selected_user_id = st.selectbox(
+            "選擇 Demo 帳號",
+            [u["id"] for u in users],
+            format_func=lambda uid: next(
+                f"{u['name']}｜手機{'✅' if u.get('phone_verified') else '⚪'}"
+                for u in users if u["id"] == uid
+            ),
+        )
         if st.button("登入", type="primary"):
-            st.session_state.current_user = next(u for u in users if u["id"] == selected_user_id)
+            selected_user = next(u for u in users if u["id"] == selected_user_id)
+            st.session_state.current_user = selected_user
             add_audit("登入系統", f"角色：{ROLE_LABELS[role]}")
             st.rerun()
 
     st.divider()
-    with st.expander("➕ 註冊新帳號"):
+    with st.expander("➕ 註冊新帳號（含手機 OTP 驗證）"):
+        st.info("流程：填寫資料 → 發送手機 OTP → 輸入驗證碼 → 送出註冊。Demo 版會把 OTP 顯示在通知中心，正式版可改接簡訊 API。")
         with st.form("signup_form"):
             new_role = st.selectbox("帳號類型", ["citizen", "company", "government"], format_func=lambda x: ROLE_LABELS[x])
             name = st.text_input("姓名 / 單位名稱")
             email = st.text_input("Email")
+            phone = st.text_input("手機號碼", placeholder="例如：0912345678 或 +886912345678")
             district = st.text_input("行政區", placeholder="例如：花蓮縣壽豐鄉")
             village = st.text_input("村里", value="全區")
             proof = st.text_area("證明資料", placeholder="政府單位可填公務信箱、職稱、服務單位；公司可填統編或網站；民眾可填聯絡資訊。")
-            submitted = st.form_submit_button("送出註冊")
-        if submitted:
-            if not name or not email or not district:
-                st.error("請至少填寫名稱、Email、行政區。")
+            otp_code = st.text_input("手機 OTP 驗證碼", placeholder="請輸入 6 碼驗證碼")
+
+            col_otp, col_submit = st.columns(2)
+            send_otp_btn = col_otp.form_submit_button("📱 發送手機 OTP")
+            submitted = col_submit.form_submit_button("✅ 送出註冊", type="primary")
+
+        phone_norm = normalize_phone(phone)
+
+        if send_otp_btn:
+            if not phone_norm or not is_valid_phone(phone_norm):
+                st.error("請輸入有效手機號碼，例如 0912345678 或 +886912345678。")
             else:
+                otp = send_phone_otp(phone_norm)
+                st.success(f"OTP 已送出至 {phone_norm}。Demo 驗證碼：{otp}")
+
+        if submitted:
+            if not name or not email or not district or not phone_norm:
+                st.error("請至少填寫名稱、Email、手機號碼、行政區。")
+            elif not is_valid_phone(phone_norm):
+                st.error("手機號碼格式不正確，請使用 0912345678 或 +886912345678。")
+            else:
+                ok, msg = verify_phone_otp(phone_norm, otp_code)
+                if not ok:
+                    st.error(msg)
+                    return
+
                 verified = False
                 status = "pending" if new_role in ["government", "company"] else "active"
                 if new_role == "government" and email.endswith(".gov.tw"):
                     verified = False
                     status = "pending"
+
                 new_user = {
                     "id": make_id("U"),
                     "name": name,
                     "role": new_role,
                     "email": email,
+                    "phone": phone_norm,
+                    "phone_verified": True,
                     "district": district,
                     "village": village or "全區",
                     "verified": verified,
@@ -787,12 +881,12 @@ def login_panel():
                     "proof": proof,
                 }
                 st.session_state.users.append(new_user)
-                add_audit("新帳號註冊", f"{name} / {ROLE_LABELS[new_role]} / status={status}")
+                add_audit("新帳號註冊", f"{name} / {ROLE_LABELS[new_role]} / phone_verified=True / status={status}")
+                add_notification(f"📱 新帳號手機已完成 OTP 驗證：{name}（{phone_norm}）", "otp")
                 if status == "pending":
-                    st.success("註冊成功，需等待平台管理員審核後才能登入。")
+                    st.success("手機 OTP 驗證成功，註冊已送出，需等待平台管理員審核後才能登入。")
                 else:
-                    st.success("註冊成功，可回上方登入。")
-
+                    st.success("手機 OTP 驗證成功，註冊完成，可回上方登入。")
 
 def sidebar_layout():
     user = get_current_user()
@@ -802,6 +896,7 @@ def sidebar_layout():
             badge = "✅" if user.get("verified") else "⚪"
             st.success(f"{badge} {user.get('name')}\n\n{ROLE_LABELS.get(user.get('role'))}")
             st.caption(f"行政區：{user.get('district')} / {user.get('village')}")
+            st.caption(f"手機：{user.get('phone', '未填')} / {'已驗證' if user.get('phone_verified') else '未驗證'}")
             if st.button("登出"):
                 add_audit("登出系統", user.get("name"))
                 st.session_state.current_user = None
@@ -1412,7 +1507,7 @@ def page_admin():
         for u in pending_users:
             with st.container(border=True):
                 st.markdown(f"### {u.get('name')}｜{ROLE_LABELS.get(u.get('role'))}")
-                st.write(f"Email：{u.get('email')}｜行政區：{u.get('district')} / {u.get('village')}")
+                st.write(f"Email：{u.get('email')}｜手機：{u.get('phone', '未填')}（{'已驗證' if u.get('phone_verified') else '未驗證'}）｜行政區：{u.get('district')} / {u.get('village')}")
                 st.caption(f"證明資料：{u.get('proof')}")
                 col_a, col_b = st.columns(2)
                 if col_a.button("✅ 核准帳號並給予認證", key=f"admin_user_ok_{u['id']}"):
@@ -1469,7 +1564,8 @@ def page_admin():
         if not pending_smart:
             st.info("目前沒有待審智慧配對。可至『🧠 智慧配對審核』按下自動掃描產生建議。")
         else:
-            for m in pending_smart[:10]:
+            for idx, m in enumerate(pending_smart[:10]):
+                unique_key = f"{m.get('id')}_{m.get('demand_id')}_{m.get('supply_id')}_{idx}"
                 d = next((x for x in st.session_state.demands if x.get("id") == m.get("demand_id")), {})
                 s = next((x for x in st.session_state.supplies if x.get("id") == m.get("supply_id")), {})
                 with st.container(border=True):
@@ -1686,6 +1782,7 @@ def page_profile():
     st.write(f"名稱：{user.get('name')}")
     st.write(f"角色：{ROLE_LABELS.get(user.get('role'))}")
     st.write(f"Email：{user.get('email')}")
+    st.write(f"手機：{user.get('phone', '未填')}｜{'✅ 手機已驗證' if user.get('phone_verified') else '⚪ 手機未驗證'}")
     st.write(f"行政區 / 村里：{user.get('district')} / {user.get('village')}")
     st.write(f"認證狀態：{'✅ 已認證' if user.get('verified') else '⚪ 未認證 / 待審'}")
     st.caption(f"證明資料：{user.get('proof')}")
@@ -1764,6 +1861,7 @@ def page_system_settings():
     st.write("公司/團體：建立供給、認領需求、查看配對與捐贈紀錄")
     st.write("政府單位：審核轄區需求與供給、審核認領、AI 調配")
     st.write("平台管理員：全平台總控、帳號審核、資料下架、異常標記、稽核紀錄")
+    st.write("手機 OTP：Demo 版顯示於通知中心；正式版可串接 SMS API，OTP 5 分鐘有效。")
 
 # =========================================================
 # 7. Main App
