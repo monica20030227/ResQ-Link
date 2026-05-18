@@ -323,7 +323,8 @@ def is_valid_phone(phone):
 
 def send_phone_otp(phone):
     """
-    Demo OTP：產生 6 碼驗證碼並寫入 session_state 與通知中心。
+    Demo OTP：產生 6 碼驗證碼並寫入 session_state。
+    注意：OTP 不寫入全站通知中心，避免其他使用者在側邊欄看到驗證碼。
     正式部署若要真的傳 SMS，可串 Twilio/三竹/中華電信簡訊 API。
     """
     phone = normalize_phone(phone)
@@ -335,7 +336,7 @@ def send_phone_otp(phone):
         "verified": False,
         "attempts": 0,
     }
-    add_notification(f"📱 Demo OTP 已傳送至 {phone}，驗證碼：{otp}（5 分鐘內有效）", "otp")
+    # Demo 版只把 OTP 回傳給目前正在註冊的人；不放進全站通知中心。
     add_audit("發送手機 OTP", f"phone={phone}")
     return otp
 
@@ -826,7 +827,7 @@ def login_panel():
 
     st.divider()
     with st.expander("➕ 註冊新帳號（含手機 OTP 驗證）"):
-        st.info("流程：填寫資料 → 發送手機 OTP → 輸入驗證碼 → 送出註冊。Demo 版會把 OTP 顯示在通知中心，正式版可改接簡訊 API。")
+        st.info("流程：填寫資料 → 發送手機 OTP → 輸入驗證碼 → 送出註冊。Demo 版只會在目前畫面顯示 OTP，不會放到全站通知中心。正式版可改接簡訊 API。")
         with st.form("signup_form"):
             new_role = st.selectbox("帳號類型", ["citizen", "company", "government"], format_func=lambda x: ROLE_LABELS[x])
             name = st.text_input("姓名 / 單位名稱")
@@ -848,7 +849,7 @@ def login_panel():
                 st.error("請輸入有效手機號碼，例如 0912345678 或 +886912345678。")
             else:
                 otp = send_phone_otp(phone_norm)
-                st.success(f"OTP 已送出至 {phone_norm}。Demo 驗證碼：{otp}")
+                st.success(f"OTP 已送出至 {phone_norm}。Demo 驗證碼：{otp}（只顯示給目前註冊者，不會進入通知中心）")
 
         if submitted:
             if not name or not email or not district or not phone_norm:
@@ -882,7 +883,7 @@ def login_panel():
                 }
                 st.session_state.users.append(new_user)
                 add_audit("新帳號註冊", f"{name} / {ROLE_LABELS[new_role]} / phone_verified=True / status={status}")
-                add_notification(f"📱 新帳號手機已完成 OTP 驗證：{name}（{phone_norm}）", "otp")
+                # 手機驗證通過屬於個人驗證事件，不寫入全站通知中心。
                 if status == "pending":
                     st.success("手機 OTP 驗證成功，註冊已送出，需等待平台管理員審核後才能登入。")
                 else:
@@ -903,7 +904,7 @@ def sidebar_layout():
                 st.rerun()
 
         st.divider()
-        st.subheader("🔔 通知中心")
+        st.subheader("🔔 配對與系統通知")
         if not st.session_state.notifications:
             st.caption("目前無最新通知。")
         else:
@@ -1495,7 +1496,7 @@ def page_admin():
         return
 
     st.title("🛡️ 平台管理員總控台")
-    st.caption("管理員負責全平台控管：帳號審核、資料修正、全區審核、異常標記、通知紀錄與稽核紀錄。")
+    st.caption("管理員功能已集中在本總控台：帳號審核、資料修正、智慧配對、認領審核、通知紀錄與稽核紀錄。")
 
     tabs = st.tabs(["帳號審核", "需求/供給控管", "智慧配對審核", "認領總審核", "通知與信件", "稽核紀錄"])
 
@@ -1861,7 +1862,7 @@ def page_system_settings():
     st.write("公司/團體：建立供給、認領需求、查看配對與捐贈紀錄")
     st.write("政府單位：審核轄區需求與供給、審核認領、AI 調配")
     st.write("平台管理員：全平台總控、帳號審核、資料下架、異常標記、稽核紀錄")
-    st.write("手機 OTP：Demo 版顯示於通知中心；正式版可串接 SMS API，OTP 5 分鐘有效。")
+    st.write("手機 OTP：Demo 版只顯示在註冊當下畫面，不進入全站通知中心；正式版可串接 SMS API，OTP 5 分鐘有效。")
 
 # =========================================================
 # 7. Main App
@@ -1892,8 +1893,7 @@ role_pages = {
         "🚚 配對管理", "📍 轄區設定", "🔔 通知紀錄", "🗺️ 公開資源池", "🤖 AI調配", "📣 我要提出需求", "📦 建立供給", "📥 AI轉譯"
     ],
     "admin": [
-        "📈 系統總覽", "🛡️ 管理員總控台", "🧾 帳號審核管理", "🪪 認證管理", "📌 需求管理", "📦 供給管理",
-        "🧠 智慧配對審核", "📋 認領申請總審核", "🔔 通知與Email紀錄", "⚙️ 系統設定", "📜 稽核紀錄", "🗺️ 公開資源池", "🤖 AI調配"
+        "📈 系統總覽", "🛡️ 管理員總控台"
     ],
 }
 
