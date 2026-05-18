@@ -1238,6 +1238,236 @@ def page_admin():
         else:
             st.info("目前無稽核紀錄。")
 
+
+
+# =========================================================
+# 6.5 依架構圖補齊的角色儀表板與分頁
+# =========================================================
+def page_role_dashboard():
+    user = get_current_user()
+    role = user.get("role")
+    st.title(f"📊 {ROLE_LABELS.get(role)}儀表板")
+
+    my_demands = [d for d in st.session_state.demands if d.get("requester_id") == user.get("id")]
+    my_supplies = [s for s in st.session_state.supplies if s.get("provider_id") == user.get("id")]
+    my_claims = [c for c in st.session_state.claims if c.get("claimant_id") == user.get("id")]
+
+    if role == "government":
+        area_demands = [d for d in st.session_state.demands if can_gov_review(user, d)]
+        area_claims = []
+        for c in st.session_state.claims:
+            d = next((x for x in st.session_state.demands if x.get("id") == c.get("demand_id")), None)
+            if d and can_gov_review(user, d):
+                area_claims.append(c)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("轄區需求", len(area_demands))
+        col2.metric("待認證需求", len([d for d in area_demands if d.get("verification_status") == "pending"]))
+        col3.metric("待審認領", len([c for c in area_claims if c.get("status") == "pending_gov_review"]))
+        col4.metric("已完成配對", len([d for d in area_demands if d.get("status") == "已完成配對"]))
+        st.info("你可以在『需求審核』認證同區/同里的民眾需求，在『供給審核』確認供給方資料，在『認領申請審核』核准媒合。")
+
+    elif role == "company":
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("我的供給", len(my_supplies))
+        col2.metric("可調派庫存", sum(int(s.get("qty", 0)) for s in my_supplies))
+        col3.metric("我的認領申請", len(my_claims))
+        col4.metric("已核准配對", len([c for c in my_claims if c.get("status") == "approved"]))
+        st.info("你可以先建立供給，再到『我要認領需求』挑選已公開需求。認領會先做系統媒合檢查，通過後才送政府或管理員審核。")
+
+    elif role == "citizen":
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("我的需求", len(my_demands))
+        col2.metric("待認證需求", len([d for d in my_demands if d.get("verification_status") == "pending"]))
+        col3.metric("我的認領申請", len(my_claims))
+        col4.metric("通知數", len(st.session_state.notifications))
+        st.info("一般民眾可以提出需求，也可以建立小量供給並認領需求；但認領不會直接成立，需通過媒合檢查與審核。")
+
+    elif role == "admin":
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("全平台需求", len(st.session_state.demands))
+        col2.metric("全平台供給", len(st.session_state.supplies))
+        col3.metric("待審帳號", len([u for u in st.session_state.users if u.get("status") == "pending"]))
+        col4.metric("待審認領", len([c for c in st.session_state.claims if c.get("status") == "pending_gov_review"]))
+        st.info("管理員負責平台總控：帳號審核、需求/供給下架、異常標記、認領總審核、通知與稽核紀錄。")
+
+
+def page_my_demands():
+    user = get_current_user()
+    st.title("📌 我的需求")
+    rows = [d for d in st.session_state.demands if d.get("requester_id") == user.get("id")]
+    if not rows:
+        st.info("你目前尚未提出需求。")
+        return
+    for d in rows:
+        with st.container(border=True):
+            demand_card(d)
+            st.caption(f"原始說明：{d.get('raw_text', '')}")
+
+
+def page_my_supplies():
+    user = get_current_user()
+    st.title("📦 我提供的供給")
+    rows = [s for s in st.session_state.supplies if s.get("provider_id") == user.get("id")]
+    if not rows:
+        st.info("你目前尚未建立供給。")
+        return
+    for s in rows:
+        with st.container(border=True):
+            st.markdown(f"### {badge_text(s.get('verification_status'))} [{s.get('id')}] {s.get('item')} x {s.get('qty')}")
+            st.write(f"📍 {s.get('location_current')}｜分類：{s.get('resource_type')} / {s.get('category')}｜狀態：{s.get('status')}")
+            st.caption(f"提供者：{s.get('provider')}｜說明：{s.get('raw_text', '')}")
+            if s.get("risk_flag"):
+                st.warning(f"異常標記：{s.get('risk_flag')}")
+
+
+def page_my_claims():
+    user = get_current_user()
+    st.title("📋 我的認領申請")
+    rows = [c for c in st.session_state.claims if c.get("claimant_id") == user.get("id")]
+    if not rows:
+        st.info("你目前沒有認領申請。")
+        return
+    for c in rows:
+        d = next((x for x in st.session_state.demands if x.get("id") == c.get("demand_id")), None)
+        s = next((x for x in st.session_state.supplies if x.get("id") == c.get("supply_id")), None)
+        with st.container(border=True):
+            st.markdown(f"### [{c.get('id')}] {CLAIM_STATUS.get(c.get('status'), c.get('status'))}")
+            st.write(f"需求：{d.get('location') if d else '已不存在'}｜{d.get('item') if d else ''} x {c.get('claim_qty')}")
+            st.write(f"供給：{s.get('provider') if s else '已不存在'}｜{s.get('item') if s else ''}")
+            st.progress(min(int(c.get('match_score', 0)), 100) / 100, text=f"媒合分數：{c.get('match_score')}｜{c.get('match_reason')}")
+            if c.get("review_note"):
+                st.caption(f"審核備註：{c.get('review_note')}")
+
+
+def page_matched_orders():
+    user = get_current_user()
+    st.title("🚚 已配對訂單 / 配送進度")
+    related = []
+    for c in st.session_state.claims:
+        if c.get("status") != "approved":
+            continue
+        d = next((x for x in st.session_state.demands if x.get("id") == c.get("demand_id")), None)
+        s = next((x for x in st.session_state.supplies if x.get("id") == c.get("supply_id")), None)
+        if not d or not s:
+            continue
+        if user.get("role") in ["admin", "government"] or c.get("claimant_id") == user.get("id") or d.get("requester_id") == user.get("id"):
+            related.append((c, d, s))
+    if not related:
+        st.info("目前沒有已核准的配對訂單。")
+        return
+    for c, d, s in related:
+        with st.container(border=True):
+            st.markdown(f"### ✅ 訂單 {c.get('id')}｜{s.get('provider')} → {d.get('location')}")
+            st.write(f"物資：{d.get('item')} x {c.get('claim_qty')}｜需求狀態：{d.get('status')}")
+            st.write(f"通知：已寄送 Email / 站內通知（Demo 紀錄可於管理員總控台查看）")
+
+
+def page_donation_records():
+    user = get_current_user()
+    st.title("💰 捐款 / 捐贈紀錄")
+    related_claims = [c for c in st.session_state.claims if c.get("claimant_id") == user.get("id")]
+    if not related_claims:
+        st.info("目前沒有捐贈或認領紀錄。")
+        return
+    data = []
+    for c in related_claims:
+        d = next((x for x in st.session_state.demands if x.get("id") == c.get("demand_id")), {})
+        s = next((x for x in st.session_state.supplies if x.get("id") == c.get("supply_id")), {})
+        data.append({
+            "申請編號": c.get("id"),
+            "需求地點": d.get("location", ""),
+            "提供項目": s.get("item", ""),
+            "數量": c.get("claim_qty"),
+            "狀態": CLAIM_STATUS.get(c.get("status"), c.get("status")),
+            "時間": c.get("time"),
+        })
+    st.dataframe(pd.DataFrame(data), hide_index=True, use_container_width=True)
+
+
+def page_profile():
+    user = get_current_user()
+    st.title("👤 個人資料")
+    st.write(f"名稱：{user.get('name')}")
+    st.write(f"角色：{ROLE_LABELS.get(user.get('role'))}")
+    st.write(f"Email：{user.get('email')}")
+    st.write(f"行政區 / 村里：{user.get('district')} / {user.get('village')}")
+    st.write(f"認證狀態：{'✅ 已認證' if user.get('verified') else '⚪ 未認證 / 待審'}")
+    st.caption(f"證明資料：{user.get('proof')}")
+
+
+def page_gov_supply_review():
+    user = get_current_user()
+    st.title("📦 供給審核")
+    st.caption("政府單位可審核轄區內的供給資料，平台管理員則可審核全平台供給。")
+    if user.get("role") == "admin":
+        rows = [s for s in st.session_state.supplies if s.get("verification_status") == "pending"]
+    else:
+        rows = [s for s in st.session_state.supplies if s.get("verification_status") == "pending" and can_gov_review(user, s)]
+    if not rows:
+        st.info("目前沒有可審核供給。")
+        return
+    for s in rows:
+        with st.container(border=True):
+            st.markdown(f"### [{s.get('id')}] {s.get('provider')}｜{s.get('item')} x {s.get('qty')}")
+            st.write(f"地區：{s.get('district')} / {s.get('village')}｜分類：{s.get('resource_type')} / {s.get('category')}")
+            note = st.text_input("審核備註", key=f"supply_review_note_{s.get('id')}")
+            col1, col2 = st.columns(2)
+            if col1.button("✅ 供給認證通過", key=f"supply_review_ok_{s.get('id')}"):
+                s["verification_status"] = "verified"
+                s["verified_by"] = user.get("id")
+                add_audit("認證供給", f"{s.get('id')} / {note}")
+                st.rerun()
+            if col2.button("❌ 駁回供給", key=f"supply_review_no_{s.get('id')}"):
+                s["verification_status"] = "rejected"
+                s["status"] = "已駁回"
+                s["risk_flag"] = note or "供給審核駁回"
+                add_audit("駁回供給", f"{s.get('id')} / {note}")
+                st.rerun()
+
+
+def page_transfer_settings():
+    user = get_current_user()
+    st.title("📍 轄區設定")
+    st.caption("Demo 版可在這裡查看政府單位的審核範圍；正式版可串接行政區資料庫。")
+    st.info(f"目前帳號可審核範圍：{user.get('district')} / {user.get('village')}")
+    st.write("審核規則：政府單位只能審核同一行政區，若村里不是『全區』，則只能審核同村里資料。")
+
+
+def page_system_overview():
+    st.title("📈 系統總覽")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("需求總數", len(st.session_state.demands))
+    col2.metric("供給總數", len(st.session_state.supplies))
+    col3.metric("認領申請", len(st.session_state.claims))
+    col4.metric("通知數", len(st.session_state.notifications))
+    st.divider()
+    st.subheader("狀態分布")
+    st.dataframe(pd.DataFrame({
+        "項目": ["已認證需求", "待認證需求", "已認證供給", "待認證供給", "已核准認領", "待審認領"],
+        "數量": [
+            len([d for d in st.session_state.demands if d.get("verification_status") == "verified"]),
+            len([d for d in st.session_state.demands if d.get("verification_status") == "pending"]),
+            len([s for s in st.session_state.supplies if s.get("verification_status") == "verified"]),
+            len([s for s in st.session_state.supplies if s.get("verification_status") == "pending"]),
+            len([c for c in st.session_state.claims if c.get("status") == "approved"]),
+            len([c for c in st.session_state.claims if c.get("status") == "pending_gov_review"]),
+        ]
+    }), hide_index=True, use_container_width=True)
+
+
+def page_system_settings():
+    st.title("⚙️ 系統設定")
+    st.caption("這裡是 Demo 設定頁，讓架構符合管理員可調整分類、通知與權限的概念。")
+    st.subheader("目前資源分類")
+    st.json(RESOURCE_TYPES)
+    st.subheader("通知設定")
+    st.write("Email：", "已設定 SMTP" if SMTP_HOST and SMTP_USER else "Demo 模式，只寫入 Email 紀錄")
+    st.subheader("權限設定")
+    st.write("一般民眾：提出需求、建立供給、認領需求、查看自己的紀錄")
+    st.write("公司/團體：建立供給、認領需求、查看配對與捐贈紀錄")
+    st.write("政府單位：審核轄區需求與供給、審核認領、AI 調配")
+    st.write("平台管理員：全平台總控、帳號審核、資料下架、異常標記、稽核紀錄")
+
 # =========================================================
 # 7. Main App
 # =========================================================
@@ -1252,34 +1482,70 @@ sidebar_layout()
 user = get_current_user()
 role = user.get("role")
 
-# 依角色顯示不同分頁，避免首頁太混亂
-common_pages = ["🏠 首頁", "🗺️ 資源池", "🤝 我要認領需求"]
+# 依架構圖顯示不同角色的功能選單
 role_pages = {
-    "citizen": common_pages + ["📣 提出需求", "📦 建立供給", "💬 對話通報", "📥 AI轉譯"],
-    "company": common_pages + ["📦 建立供給", "📥 AI轉譯"],
-    "government": common_pages + ["📣 提出需求", "📦 建立供給", "🏛️ 政府審核", "🤖 AI調配", "📥 AI轉譯"],
-    "admin": ["🏠 首頁", "🛡️ 管理員總控台", "🗺️ 資源池", "🏛️ 政府審核", "🤖 AI調配", "📣 提出需求", "📦 建立供給", "🤝 我要認領需求", "📥 AI轉譯"],
+    "citizen": [
+        "📊 儀表板", "📌 我的需求", "📣 我要提出需求", "🤝 我要認領需求", "📋 我的認領申請",
+        "💰 我要捐款/捐贈紀錄", "🔔 通知紀錄", "👤 個人資料", "🗺️ 公開資源池", "💬 對話通報", "📥 AI轉譯"
+    ],
+    "company": [
+        "📊 儀表板", "📦 我提供的供給", "📦 建立供給", "🤝 我要認領需求", "📋 我的認領申請",
+        "🚚 已配對訂單", "💰 捐款/捐贈紀錄", "🔔 通知紀錄", "🗺️ 公開資源池", "📥 AI轉譯"
+    ],
+    "government": [
+        "📊 儀表板", "✅ 需求審核", "📦 供給審核", "🪪 認證管理", "📋 認領申請審核",
+        "🚚 配對管理", "📍 轄區設定", "🔔 通知紀錄", "🗺️ 公開資源池", "🤖 AI調配", "📣 我要提出需求", "📦 建立供給", "📥 AI轉譯"
+    ],
+    "admin": [
+        "📈 系統總覽", "🛡️ 管理員總控台", "🧾 帳號審核管理", "🪪 認證管理", "📌 需求管理", "📦 供給管理",
+        "📋 認領申請總審核", "🔔 通知與Email紀錄", "⚙️ 系統設定", "📜 稽核紀錄", "🗺️ 公開資源池", "🤖 AI調配"
+    ],
 }
 
-page = st.sidebar.radio("功能選單", role_pages.get(role, common_pages))
+page = st.sidebar.radio("功能選單", role_pages.get(role, ["📊 儀表板"]))
 
-if page == "🏠 首頁":
-    page_home()
-elif page == "📣 提出需求":
+if page in ["🏠 首頁", "📊 儀表板"]:
+    page_role_dashboard()
+elif page in ["📣 提出需求", "📣 我要提出需求"]:
     page_submit_demand()
-elif page == "📦 建立供給":
+elif page == "📌 我的需求":
+    page_my_demands()
+elif page in ["📦 建立供給"]:
     page_submit_supply()
+elif page == "📦 我提供的供給":
+    page_my_supplies()
 elif page == "🤝 我要認領需求":
     page_public_claims()
-elif page == "🏛️ 政府審核":
+elif page == "📋 我的認領申請":
+    page_my_claims()
+elif page in ["✅ 需求審核", "📋 認領申請審核"]:
     page_gov_review()
-elif page == "🗺️ 資源池":
+elif page == "📦 供給審核":
+    page_gov_supply_review()
+elif page in ["🪪 認證管理", "🧾 帳號審核管理", "📌 需求管理", "📦 供給管理", "📋 認領申請總審核", "🔔 通知與Email紀錄", "📜 稽核紀錄"]:
+    page_admin()
+elif page == "🛡️ 管理員總控台":
+    page_admin()
+elif page in ["🗺️ 資源池", "🗺️ 公開資源池"]:
     page_map_pool()
+elif page in ["🚚 已配對訂單", "🚚 配對管理"]:
+    page_matched_orders()
+elif page in ["💰 捐款/捐贈紀錄", "💰 我要捐款/捐贈紀錄"]:
+    page_donation_records()
+elif page == "📍 轄區設定":
+    page_transfer_settings()
+elif page == "📈 系統總覽":
+    page_system_overview()
+elif page == "⚙️ 系統設定":
+    page_system_settings()
 elif page == "🤖 AI調配":
     page_ai_match()
 elif page == "📥 AI轉譯":
     page_multimodal()
 elif page == "💬 對話通報":
     page_chatbot()
-elif page == "🛡️ 管理員總控台":
-    page_admin()
+elif page == "🔔 通知紀錄":
+    st.title("🔔 通知紀錄")
+    st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
+else:
+    page_role_dashboard()
