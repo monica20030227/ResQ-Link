@@ -46,6 +46,13 @@ CLAIM_STATUS = {
     "rejected": "已駁回",
 }
 
+SMART_MATCH_STATUS = {
+    "pending_admin_review": "待管理員審核",
+    "approved": "已核准並完成配對",
+    "rejected": "已駁回",
+    "expired": "已失效",
+}
+
 # =========================================================
 # 1. Session State 初始化
 # =========================================================
@@ -220,6 +227,11 @@ def init_session_state():
 
     if "claims" not in st.session_state:
         st.session_state.claims = []
+
+    # 系統自動掃描供需後產生的「智慧配對建議」
+    # 與民眾/公司主動認領不同，這裡是平台主動發現可媒合組合，交給管理員審核。
+    if "smart_matches" not in st.session_state:
+        st.session_state.smart_matches = []
 
     if "notifications" not in st.session_state:
         st.session_state.notifications = []
@@ -485,6 +497,157 @@ def simple_match_check(demand, supply, claim_qty):
     if not reasons:
         reasons.append("分類或品項關聯不足")
     return passed, score, "、".join(reasons)
+
+
+
+def smart_match_exists(demand_id, supply_id):
+    """避免同一組需求/供給被重複產生智慧配對建議。"""
+    for m in st.session_state.smart_matches:
+        if (
+            m.get("demand_id") == demand_id
+            and m.get("supply_id") == supply_id
+            and m.get("status") == "pending_admin_review"
+        ):
+            return True
+    return False
+
+
+def generate_smart_match_suggestions(min_score=45, only_verified_demand=False, only_verified_supply=False):
+    """
+    自動掃描全平台的需求與供給。
+    若資源型態、分類、品項、數量與地區等條件達到門檻，
+    就建立一筆「智慧配對建議」，提供平台管理員審核。
+    """
+    created = 0
+    candidates = []
+
+    active_demands = [
+        d for d in st.session_state.demands
+        if d.get("status") in ["未處理", "部分配對 (尚缺)"]
+        and int(d.get("qty", 0)) > 0
+        and d.get("verification_status") != "rejected"
+    ]
+    active_supplies = [
+        s for s in st.session_state.supplies
+        if int(s.get("qty", 0)) > 0
+        and s.get("status") not in ["已駁回", "已下架", "已指派 (無庫存)"]
+        and s.get("verification_status") != "rejected"
+    ]
+
+    if only_verified_demand:
+        active_demands = [d for d in active_demands if d.get("verification_status") == "verified"]
+    if only_verified_supply:
+        active_supplies = [s for s in active_supplies if s.get("verification_status") == "verified"]
+
+    for d in active_demands:
+        for s in active_supplies:
+            if smart_match_exists(d.get("id"), s.get("id")):
+                continue
+
+            suggested_qty = min(int(d.get("qty", 0)), int(s.get("qty", 0)))
+            passed, score, reason = simple_match_check(d, s, suggested_qty)
+
+            if passed and score >= min_score:
+                candidates.append((score, d, s, suggested_qty, reason))
+
+    candidates = sorted(candidates, key=lambda x: x[0], reverse=True)
+
+    for score, d, s, suggested_qty, reason in candidates:
+        smart_match = {
+            "id": make_id("M"),
+            "time": now_str(),
+            "demand_id": d.get("id"),
+            "supply_id": s.get("id"),
+            "suggested_qty": suggested_qty,
+            "match_score": score,
+            "match_reason": reason,
+            "status": "pending_admin_review",
+            "reviewer": "",
+            "review_note": "",
+            "review_time": "",
+        }
+        st.session_state.smart_matches.insert(0, smart_match)
+        created += 1
+
+    if created > 0:
+        add_notification(f"🧠 系統產生 {created} 筆智慧配對建議，待平台管理員審核。", "smart_match")
+        add_audit("產生智慧配對建議", f"新增 {created} 筆，門檻 {min_score}")
+    else:
+        add_audit("產生智慧配對建議", f"沒有新增建議，門檻 {min_score}")
+
+    return created
+
+
+def approve_smart_match(match_id, note=""):
+    """管理員核准智慧配對建議後，才正式扣庫存、更新需求並通知雙方。"""
+    m = next((x for x in st.session_state.smart_matches if x.get("id") == match_id), None)
+    if not m:
+        return False, "找不到智慧配對建議"
+
+    d = next((x for x in st.session_state.demands if x.get("id") == m.get("demand_id")), None)
+    s = next((x for x in st.session_state.supplies if x.get("id") == m.get("supply_id")), None)
+
+    if not d or not s:
+        m["status"] = "expired"
+        m["review_note"] = "需求或供給資料已不存在"
+        return False, "需求或供給資料已不存在"
+
+    transfer_qty = min(int(m.get("suggested_qty", 0)), int(d.get("qty", 0)), int(s.get("qty", 0)))
+    if transfer_qty <= 0:
+        m["status"] = "expired"
+        m["review_note"] = "需求或供給數量已不足"
+        return False, "需求或供給數量已不足"
+
+    claim = {
+        "id": make_id("C"),
+        "time": now_str(),
+        "claimant_id": s.get("provider_id"),
+        "claimant_name": s.get("provider"),
+        "claimant_role": "system_smart_match",
+        "demand_id": d.get("id"),
+        "supply_id": s.get("id"),
+        "claim_qty": transfer_qty,
+        "match_score": m.get("match_score", 0),
+        "match_reason": m.get("match_reason", ""),
+        "status": "pending_gov_review",
+        "note": "由系統智慧配對產生，平台管理員核准",
+        "reviewer": "",
+        "review_note": note or "平台管理員核准智慧配對",
+        "review_time": "",
+    }
+    st.session_state.claims.insert(0, claim)
+
+    ok = execute_dispatch(
+        d.get("id"),
+        s.get("id"),
+        s.get("provider"),
+        transfer_qty,
+        claim_id=claim.get("id"),
+    )
+
+    if ok:
+        user = get_current_user() or {"name": "平台管理員"}
+        m["status"] = "approved"
+        m["reviewer"] = user.get("name")
+        m["review_note"] = note or "平台管理員核准智慧配對"
+        m["review_time"] = now_str()
+        add_audit("核准智慧配對", f"{match_id} / {d.get('id')} ← {s.get('id')} / 數量 {transfer_qty}")
+        return True, "已核准並完成配對"
+
+    return False, "配對失敗"
+
+
+def reject_smart_match(match_id, note=""):
+    m = next((x for x in st.session_state.smart_matches if x.get("id") == match_id), None)
+    if not m:
+        return False
+    user = get_current_user() or {"name": "平台管理員"}
+    m["status"] = "rejected"
+    m["reviewer"] = user.get("name")
+    m["review_note"] = note or "平台管理員駁回智慧配對"
+    m["review_time"] = now_str()
+    add_audit("駁回智慧配對", f"{match_id} / {m['review_note']}")
+    return True
 
 
 def execute_dispatch(demand_id, supply_id, provider_name, transfer_qty=None, claim_id=None):
@@ -956,7 +1119,7 @@ def page_map_pool():
         st.map(pd.DataFrame(map_data), color="color", zoom=6, use_container_width=True)
 
     st.divider()
-    tab1, tab2, tab3 = st.tabs(["需求池", "供給池", "認領申請"])
+    tab1, tab2, tab3, tab4 = st.tabs(["需求池", "供給池", "認領申請", "智慧配對建議"])
     with tab1:
         df = pd.DataFrame(st.session_state.demands)
         cols = ["id", "district", "village", "item", "qty", "resource_type", "category", "verification_status", "status", "matched_provider"]
@@ -969,6 +1132,12 @@ def page_map_pool():
         df = pd.DataFrame(st.session_state.claims)
         if df.empty:
             st.info("目前尚無認領申請。")
+        else:
+            st.dataframe(df, hide_index=True, use_container_width=True)
+    with tab4:
+        df = pd.DataFrame(st.session_state.smart_matches)
+        if df.empty:
+            st.info("目前尚無智慧配對建議。")
         else:
             st.dataframe(df, hide_index=True, use_container_width=True)
 
@@ -1121,6 +1290,107 @@ def page_chatbot():
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
 
+
+def page_smart_match_review():
+    user = get_current_user()
+    if user.get("role") != "admin":
+        st.error("此頁面僅限平台管理員使用。")
+        return
+
+    st.title("🧠 智慧配對審核")
+    st.caption("系統會自動掃描需求池與供給池，若品項、分類、數量與地區條件符合，就產生配對建議；管理員核准後才會正式扣庫存、建立配對紀錄並通知雙方。")
+
+    with st.container(border=True):
+        st.subheader("產生智慧配對建議")
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+        with col1:
+            min_score = st.slider("最低媒合分數", 30, 100, 45, 5)
+        with col2:
+            only_verified_demand = st.checkbox("只掃描已認證需求", value=False)
+        with col3:
+            only_verified_supply = st.checkbox("只掃描已認證供給", value=False)
+        with col4:
+            st.write("")
+            st.write("")
+            if st.button("⚡ 自動掃描並產生建議", type="primary", use_container_width=True):
+                created = generate_smart_match_suggestions(min_score, only_verified_demand, only_verified_supply)
+                if created:
+                    st.success(f"已新增 {created} 筆智慧配對建議。")
+                else:
+                    st.info("目前沒有新的可配對組合，或已存在待審建議。")
+                st.rerun()
+
+    st.divider()
+
+    tab1, tab2, tab3 = st.tabs(["待審智慧配對", "已核准", "已駁回/失效"])
+
+    def render_match_card(m):
+        d = next((x for x in st.session_state.demands if x.get("id") == m.get("demand_id")), None)
+        s = next((x for x in st.session_state.supplies if x.get("id") == m.get("supply_id")), None)
+
+        if not d or not s:
+            st.warning(f"{m.get('id')}：需求或供給資料已不存在。")
+            return
+
+        st.markdown(f"### [{m.get('id')}] {d.get('item')} x {m.get('suggested_qty')} ｜ {SMART_MATCH_STATUS.get(m.get('status'), m.get('status'))}")
+        col_d, col_s = st.columns(2)
+        with col_d:
+            st.markdown("#### 🚨 需求端")
+            st.write(f"地點：{d.get('location')}")
+            st.write(f"需求：{d.get('item')}｜剩餘 {d.get('qty')}")
+            st.write(f"分類：{d.get('resource_type')} / {d.get('category')}")
+            st.write(f"認證：{badge_text(d.get('verification_status'))}")
+            st.caption(f"提出者：{d.get('requester_name')}｜緊急度：{d.get('urgency')}")
+        with col_s:
+            st.markdown("#### 📦 供給端")
+            st.write(f"提供者：{s.get('provider')}")
+            st.write(f"供給：{s.get('item')}｜庫存 {s.get('qty')}")
+            st.write(f"分類：{s.get('resource_type')} / {s.get('category')}")
+            st.write(f"認證：{badge_text(s.get('verification_status'))}")
+            st.caption(f"所在地：{s.get('location_current')}")
+
+        st.progress(min(int(m.get("match_score", 0)), 100) / 100, text=f"媒合分數：{m.get('match_score')}｜{m.get('match_reason')}")
+        if m.get("review_note"):
+            st.caption(f"審核備註：{m.get('review_note')}")
+
+    with tab1:
+        rows = [m for m in st.session_state.smart_matches if m.get("status") == "pending_admin_review"]
+        if not rows:
+            st.info("目前沒有待審智慧配對建議。")
+        for m in rows:
+            with st.container(border=True):
+                render_match_card(m)
+                note = st.text_input("管理員審核備註", key=f"smart_note_{m.get('id')}")
+                col_a, col_b = st.columns(2)
+                if col_a.button("✅ 核准智慧配對並正式調度", key=f"smart_ok_{m.get('id')}"):
+                    ok, msg = approve_smart_match(m.get("id"), note)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                    st.rerun()
+                if col_b.button("❌ 駁回智慧配對", key=f"smart_no_{m.get('id')}"):
+                    reject_smart_match(m.get("id"), note)
+                    st.warning("已駁回。")
+                    st.rerun()
+
+    with tab2:
+        rows = [m for m in st.session_state.smart_matches if m.get("status") == "approved"]
+        if not rows:
+            st.info("目前沒有已核准的智慧配對。")
+        for m in rows:
+            with st.container(border=True):
+                render_match_card(m)
+
+    with tab3:
+        rows = [m for m in st.session_state.smart_matches if m.get("status") in ["rejected", "expired"]]
+        if not rows:
+            st.info("目前沒有已駁回或失效的智慧配對。")
+        for m in rows:
+            with st.container(border=True):
+                render_match_card(m)
+
+
 def page_admin():
     user = get_current_user()
     if user.get("role") != "admin":
@@ -1130,7 +1400,7 @@ def page_admin():
     st.title("🛡️ 平台管理員總控台")
     st.caption("管理員負責全平台控管：帳號審核、資料修正、全區審核、異常標記、通知紀錄與稽核紀錄。")
 
-    tabs = st.tabs(["帳號審核", "需求/供給控管", "認領總審核", "通知與信件", "稽核紀錄"])
+    tabs = st.tabs(["帳號審核", "需求/供給控管", "智慧配對審核", "認領總審核", "通知與信件", "稽核紀錄"])
 
     with tabs[0]:
         st.subheader("帳號審核")
@@ -1191,6 +1461,29 @@ def page_admin():
                     st.rerun()
 
     with tabs[2]:
+        st.subheader("智慧配對審核")
+        st.info("完整操作頁可從側邊欄『🧠 智慧配對審核』進入；此處提供待審摘要。")
+        pending_smart = [m for m in st.session_state.smart_matches if m.get("status") == "pending_admin_review"]
+        if not pending_smart:
+            st.info("目前沒有待審智慧配對。可至『🧠 智慧配對審核』按下自動掃描產生建議。")
+        else:
+            for m in pending_smart[:10]:
+                d = next((x for x in st.session_state.demands if x.get("id") == m.get("demand_id")), {})
+                s = next((x for x in st.session_state.supplies if x.get("id") == m.get("supply_id")), {})
+                with st.container(border=True):
+                    st.markdown(f"### {m.get('id')}｜{d.get('item')} x {m.get('suggested_qty')}")
+                    st.write(f"需求：{d.get('location')}｜供給：{s.get('provider')} / {s.get('item')}")
+                    st.progress(min(int(m.get("match_score", 0)), 100) / 100, text=f"媒合分數：{m.get('match_score')}｜{m.get('match_reason')}")
+                    note = st.text_input("審核備註", key=f"admin_smart_note_{m.get('id')}")
+                    col_a, col_b = st.columns(2)
+                    if col_a.button("✅ 核准智慧配對", key=f"admin_smart_ok_{m.get('id')}"):
+                        approve_smart_match(m.get("id"), note)
+                        st.rerun()
+                    if col_b.button("❌ 駁回智慧配對", key=f"admin_smart_no_{m.get('id')}"):
+                        reject_smart_match(m.get("id"), note)
+                        st.rerun()
+
+    with tabs[3]:
         st.subheader("認領總審核")
         pending_claims = [c for c in st.session_state.claims if c.get("status") == "pending_gov_review"]
         if not pending_claims:
@@ -1221,7 +1514,7 @@ def page_admin():
                     add_audit("管理員駁回認領", c["id"])
                     st.rerun()
 
-    with tabs[3]:
+    with tabs[4]:
         st.subheader("通知與 Email 紀錄")
         col1, col2 = st.columns(2)
         with col1:
@@ -1231,7 +1524,7 @@ def page_admin():
             st.markdown("#### Email 紀錄")
             st.dataframe(pd.DataFrame(st.session_state.email_logs), hide_index=True, use_container_width=True)
 
-    with tabs[4]:
+    with tabs[5]:
         st.subheader("稽核紀錄")
         if st.session_state.audit_logs:
             st.dataframe(pd.DataFrame(st.session_state.audit_logs), hide_index=True, use_container_width=True)
@@ -1288,7 +1581,8 @@ def page_role_dashboard():
         col2.metric("全平台供給", len(st.session_state.supplies))
         col3.metric("待審帳號", len([u for u in st.session_state.users if u.get("status") == "pending"]))
         col4.metric("待審認領", len([c for c in st.session_state.claims if c.get("status") == "pending_gov_review"]))
-        st.info("管理員負責平台總控：帳號審核、需求/供給下架、異常標記、認領總審核、通知與稽核紀錄。")
+        st.metric("待審智慧配對", len([m for m in st.session_state.smart_matches if m.get("status") == "pending_admin_review"]))
+        st.info("管理員負責平台總控：帳號審核、需求/供給下架、異常標記、智慧配對審核、認領總審核、通知與稽核紀錄。")
 
 
 def page_my_demands():
@@ -1443,7 +1737,7 @@ def page_system_overview():
     st.divider()
     st.subheader("狀態分布")
     st.dataframe(pd.DataFrame({
-        "項目": ["已認證需求", "待認證需求", "已認證供給", "待認證供給", "已核准認領", "待審認領"],
+        "項目": ["已認證需求", "待認證需求", "已認證供給", "待認證供給", "已核准認領", "待審認領", "待審智慧配對"],
         "數量": [
             len([d for d in st.session_state.demands if d.get("verification_status") == "verified"]),
             len([d for d in st.session_state.demands if d.get("verification_status") == "pending"]),
@@ -1451,6 +1745,7 @@ def page_system_overview():
             len([s for s in st.session_state.supplies if s.get("verification_status") == "pending"]),
             len([c for c in st.session_state.claims if c.get("status") == "approved"]),
             len([c for c in st.session_state.claims if c.get("status") == "pending_gov_review"]),
+            len([m for m in st.session_state.smart_matches if m.get("status") == "pending_admin_review"]),
         ]
     }), hide_index=True, use_container_width=True)
 
@@ -1498,7 +1793,7 @@ role_pages = {
     ],
     "admin": [
         "📈 系統總覽", "🛡️ 管理員總控台", "🧾 帳號審核管理", "🪪 認證管理", "📌 需求管理", "📦 供給管理",
-        "📋 認領申請總審核", "🔔 通知與Email紀錄", "⚙️ 系統設定", "📜 稽核紀錄", "🗺️ 公開資源池", "🤖 AI調配"
+        "🧠 智慧配對審核", "📋 認領申請總審核", "🔔 通知與Email紀錄", "⚙️ 系統設定", "📜 稽核紀錄", "🗺️ 公開資源池", "🤖 AI調配"
     ],
 }
 
@@ -1522,6 +1817,8 @@ elif page in ["✅ 需求審核", "📋 認領申請審核"]:
     page_gov_review()
 elif page == "📦 供給審核":
     page_gov_supply_review()
+elif page == "🧠 智慧配對審核":
+    page_smart_match_review()
 elif page in ["🪪 認證管理", "🧾 帳號審核管理", "📌 需求管理", "📦 供給管理", "📋 認領申請總審核", "🔔 通知與Email紀錄", "📜 稽核紀錄"]:
     page_admin()
 elif page == "🛡️ 管理員總控台":
