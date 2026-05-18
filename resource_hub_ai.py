@@ -1560,27 +1560,97 @@ def page_admin():
 
     with tabs[2]:
         st.subheader("智慧配對審核")
-        st.info("完整操作頁可從側邊欄『🧠 智慧配對審核』進入；此處提供待審摘要。")
-        pending_smart = [m for m in st.session_state.smart_matches if m.get("status") == "pending_admin_review"]
-        if not pending_smart:
-            st.info("目前沒有待審智慧配對。可至『🧠 智慧配對審核』按下自動掃描產生建議。")
-        else:
-            for idx, m in enumerate(pending_smart[:10]):
-                unique_key = f"{m.get('id')}_{m.get('demand_id')}_{m.get('supply_id')}_{idx}"
-                d = next((x for x in st.session_state.demands if x.get("id") == m.get("demand_id")), {})
-                s = next((x for x in st.session_state.supplies if x.get("id") == m.get("supply_id")), {})
-                with st.container(border=True):
-                    st.markdown(f"### {m.get('id')}｜{d.get('item')} x {m.get('suggested_qty')}")
-                    st.write(f"需求：{d.get('location')}｜供給：{s.get('provider')} / {s.get('item')}")
-                    st.progress(min(int(m.get("match_score", 0)), 100) / 100, text=f"媒合分數：{m.get('match_score')}｜{m.get('match_reason')}")
-                    note = st.text_input("審核備註", key=f"admin_smart_note_{unique_key}")
+        st.caption("在這裡直接產生、查看、核准或駁回智慧配對建議。管理員核准後才會正式扣庫存、建立配對紀錄並通知雙方。")
+
+        with st.container(border=True):
+            st.markdown("#### ⚡ 自動掃描供需並產生建議")
+            col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+            with col1:
+                min_score = st.slider("最低媒合分數", 30, 100, 45, 5, key="admin_tab_smart_min_score")
+            with col2:
+                only_verified_demand = st.checkbox("只掃描已認證需求", value=False, key="admin_tab_only_verified_demand")
+            with col3:
+                only_verified_supply = st.checkbox("只掃描已認證供給", value=False, key="admin_tab_only_verified_supply")
+            with col4:
+                st.write("")
+                st.write("")
+                if st.button("⚡ 自動掃描", type="primary", use_container_width=True, key="admin_tab_generate_smart"):
+                    created = generate_smart_match_suggestions(min_score, only_verified_demand, only_verified_supply)
+                    if created:
+                        st.success(f"已新增 {created} 筆智慧配對建議。")
+                    else:
+                        st.info("目前沒有新的可配對組合，或已存在待審建議。")
+                    st.rerun()
+
+        st.divider()
+        subtab1, subtab2, subtab3 = st.tabs(["待審智慧配對", "已核准", "已駁回/失效"])
+
+        def render_admin_smart_match(m, idx, readonly=False):
+            d = next((x for x in st.session_state.demands if x.get("id") == m.get("demand_id")), None)
+            s = next((x for x in st.session_state.supplies if x.get("id") == m.get("supply_id")), None)
+            unique_key = f"admin_inline_smart_{m.get('id')}_{m.get('demand_id')}_{m.get('supply_id')}_{idx}"
+
+            if not d or not s:
+                st.warning(f"{m.get('id')}：需求或供給資料已不存在。")
+                return
+
+            with st.container(border=True):
+                st.markdown(f"### [{m.get('id')}] {d.get('item')} x {m.get('suggested_qty')}｜{SMART_MATCH_STATUS.get(m.get('status'), m.get('status'))}")
+                col_d, col_s = st.columns(2)
+                with col_d:
+                    st.markdown("#### 🚨 需求端")
+                    st.write(f"地點：{d.get('location')}")
+                    st.write(f"需求：{d.get('item')}｜剩餘 {d.get('qty')}")
+                    st.write(f"分類：{d.get('resource_type')} / {d.get('category')}")
+                    st.write(f"認證：{badge_text(d.get('verification_status'))}")
+                    st.caption(f"提出者：{d.get('requester_name')}｜緊急度：{d.get('urgency')}")
+                with col_s:
+                    st.markdown("#### 📦 供給端")
+                    st.write(f"提供者：{s.get('provider')}")
+                    st.write(f"供給：{s.get('item')}｜庫存 {s.get('qty')}")
+                    st.write(f"分類：{s.get('resource_type')} / {s.get('category')}")
+                    st.write(f"認證：{badge_text(s.get('verification_status'))}")
+                    st.caption(f"所在地：{s.get('location_current')}")
+
+                st.progress(min(int(m.get("match_score", 0)), 100) / 100, text=f"媒合分數：{m.get('match_score')}｜{m.get('match_reason')}")
+                if m.get("review_note"):
+                    st.caption(f"審核備註：{m.get('review_note')}")
+
+                if not readonly:
+                    note = st.text_input("管理員審核備註", key=f"{unique_key}_note")
                     col_a, col_b = st.columns(2)
-                    if col_a.button("✅ 核准智慧配對", key=f"admin_smart_ok_{unique_key}"):
-                        approve_smart_match(m.get("id"), note)
+                    if col_a.button("✅ 核准智慧配對並正式調度", key=f"{unique_key}_ok"):
+                        ok, msg = approve_smart_match(m.get("id"), note)
+                        if ok:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
                         st.rerun()
-                    if col_b.button("❌ 駁回智慧配對", key=f"admin_smart_no_{unique_key}"):
+                    if col_b.button("❌ 駁回智慧配對", key=f"{unique_key}_no"):
                         reject_smart_match(m.get("id"), note)
+                        st.warning("已駁回。")
                         st.rerun()
+
+        with subtab1:
+            rows = [m for m in st.session_state.smart_matches if m.get("status") == "pending_admin_review"]
+            if not rows:
+                st.info("目前沒有待審智慧配對。請按上方『自動掃描』產生建議。")
+            for idx, m in enumerate(rows):
+                render_admin_smart_match(m, idx, readonly=False)
+
+        with subtab2:
+            rows = [m for m in st.session_state.smart_matches if m.get("status") == "approved"]
+            if not rows:
+                st.info("目前沒有已核准的智慧配對。")
+            for idx, m in enumerate(rows):
+                render_admin_smart_match(m, idx, readonly=True)
+
+        with subtab3:
+            rows = [m for m in st.session_state.smart_matches if m.get("status") in ["rejected", "expired"]]
+            if not rows:
+                st.info("目前沒有已駁回或失效的智慧配對。")
+            for idx, m in enumerate(rows):
+                render_admin_smart_match(m, idx, readonly=True)
 
     with tabs[3]:
         st.subheader("認領總審核")
