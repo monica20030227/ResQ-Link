@@ -553,8 +553,9 @@ def generate_smart_match_suggestions(min_score=45, only_verified_demand=False, o
     candidates = sorted(candidates, key=lambda x: x[0], reverse=True)
 
     for score, d, s, suggested_qty, reason in candidates:
+        # 使用需求ID + 供給ID + created 序號建立唯一 ID，避免同一毫秒產生重複 ID
         smart_match = {
-            "id": make_id("M"),
+            "id": f"M_{d.get('id')}_{s.get('id')}_{int(time.time() * 1000)}_{created}",
             "time": now_str(),
             "demand_id": d.get("id"),
             "supply_id": s.get("id"),
@@ -1357,19 +1358,20 @@ def page_smart_match_review():
         rows = [m for m in st.session_state.smart_matches if m.get("status") == "pending_admin_review"]
         if not rows:
             st.info("目前沒有待審智慧配對建議。")
-        for m in rows:
+        for idx, m in enumerate(rows):
+            unique_key = f"{m.get('id')}_{m.get('demand_id')}_{m.get('supply_id')}_{idx}"
             with st.container(border=True):
                 render_match_card(m)
-                note = st.text_input("管理員審核備註", key=f"smart_note_{m.get('id')}")
+                note = st.text_input("管理員審核備註", key=f"smart_note_{unique_key}")
                 col_a, col_b = st.columns(2)
-                if col_a.button("✅ 核准智慧配對並正式調度", key=f"smart_ok_{m.get('id')}"):
+                if col_a.button("✅ 核准智慧配對並正式調度", key=f"smart_ok_{unique_key}"):
                     ok, msg = approve_smart_match(m.get("id"), note)
                     if ok:
                         st.success(msg)
                     else:
                         st.error(msg)
                     st.rerun()
-                if col_b.button("❌ 駁回智慧配對", key=f"smart_no_{m.get('id')}"):
+                if col_b.button("❌ 駁回智慧配對", key=f"smart_no_{unique_key}"):
                     reject_smart_match(m.get("id"), note)
                     st.warning("已駁回。")
                     st.rerun()
@@ -1474,12 +1476,12 @@ def page_admin():
                     st.markdown(f"### {m.get('id')}｜{d.get('item')} x {m.get('suggested_qty')}")
                     st.write(f"需求：{d.get('location')}｜供給：{s.get('provider')} / {s.get('item')}")
                     st.progress(min(int(m.get("match_score", 0)), 100) / 100, text=f"媒合分數：{m.get('match_score')}｜{m.get('match_reason')}")
-                    note = st.text_input("審核備註", key=f"admin_smart_note_{m.get('id')}")
+                    note = st.text_input("審核備註", key=f"admin_smart_note_{unique_key}")
                     col_a, col_b = st.columns(2)
-                    if col_a.button("✅ 核准智慧配對", key=f"admin_smart_ok_{m.get('id')}"):
+                    if col_a.button("✅ 核准智慧配對", key=f"admin_smart_ok_{unique_key}"):
                         approve_smart_match(m.get("id"), note)
                         st.rerun()
-                    if col_b.button("❌ 駁回智慧配對", key=f"admin_smart_no_{m.get('id')}"):
+                    if col_b.button("❌ 駁回智慧配對", key=f"admin_smart_no_{unique_key}"):
                         reject_smart_match(m.get("id"), note)
                         st.rerun()
 
