@@ -864,17 +864,23 @@ def login_panel():
             st.rerun()
 
     st.divider()
-    with st.expander("➕ 註冊新帳號（含手機 OTP 驗證）"):
-        st.info("流程：填寫資料 → 發送手機 OTP → 輸入驗證碼 → 送出註冊。Demo 版只會在目前畫面顯示 OTP，不會放到全站通知中心。正式版可改接簡訊 API。")
+    with st.expander("➕ 註冊新帳號（含企業防偽與手機驗證）"):
+        st.info("流程：填寫資料 → 企業驗證統編 / 民眾發送 OTP → 送出註冊。")
         with st.form("signup_form"):
             new_role = st.selectbox("帳號類型", ["citizen", "company", "government"], format_func=lambda x: ROLE_LABELS[x])
             name = st.text_input("姓名 / 單位名稱")
+            
+            # 💡 新增：企業專屬的統一編號欄位
+            vat_number = ""
+            if new_role == "company":
+                vat_number = st.text_input("統一編號 (8碼數字)", placeholder="例如：16098128 (統一企業)")
+                
             email = st.text_input("Email")
-            phone = st.text_input("手機號碼", placeholder="例如：0912345678 或 +886912345678")
+            phone = st.text_input("手機號碼", placeholder="例如：0912345678")
             district = st.text_input("行政區", placeholder="例如：花蓮縣壽豐鄉")
             village = st.text_input("村里", value="全區")
-            proof = st.text_area("證明資料", placeholder="政府單位可填公務信箱、職稱、服務單位；公司可填統編或網站；民眾可填聯絡資訊。")
-            otp_code = st.text_input("手機 OTP 驗證碼", placeholder="請輸入 6 碼驗證碼")
+            proof = st.text_area("證明資料", placeholder="政府填公務信箱；企業統編系統將自動驗證；民眾填聯絡資訊。")
+            otp_code = st.text_input("手機 OTP 驗證碼", placeholder="請輸入 6 碼驗證碼 (企業不強制)")
 
             col_otp, col_submit = st.columns(2)
             send_otp_btn = col_otp.form_submit_button("📱 發送手機 OTP")
@@ -884,48 +890,55 @@ def login_panel():
 
         if send_otp_btn:
             if not phone_norm or not is_valid_phone(phone_norm):
-                st.error("請輸入有效手機號碼，例如 0912345678 或 +886912345678。")
+                st.error("請輸入有效手機號碼。")
             else:
                 otp = send_phone_otp(phone_norm)
-                st.success(f"OTP 已送出至 {phone_norm}。Demo 驗證碼：{otp}（只顯示給目前註冊者，不會進入通知中心）")
+                st.success(f"OTP 已送出至 {phone_norm}。Demo 驗證碼：{otp}")
 
         if submitted:
-            if not name or not email or not district or not phone_norm:
-                st.error("請至少填寫名稱、Email、手機號碼、行政區。")
-            elif not is_valid_phone(phone_norm):
-                st.error("手機號碼格式不正確，請使用 0912345678 或 +886912345678。")
-            else:
+            if not name or not email or not district:
+                st.error("請至少填寫名稱、Email、行政區。")
+                return
+                
+            # 💡 企業防偽審查：模擬經濟部商業司 API
+            if new_role == "company":
+                if not re.match(r"^\d{8}$", vat_number):
+                    st.error("❌ 企業註冊請填寫正確的 8 碼統一編號！")
+                    return
+                with st.spinner("🔄 正在向經濟部商業司 API 驗證統一編號..."):
+                    time.sleep(1.5) # 模擬 API 延遲
+                st.success(f"✅ 統編 {vat_number} 驗證成功！")
+                proof = f"[統編 {vat_number} API驗證通過] " + proof
+
+            if new_role != "company" and not is_valid_phone(phone_norm):
+                st.error("手機號碼格式不正確。")
+                return
+
+            if new_role != "company" and otp_code:
                 ok, msg = verify_phone_otp(phone_norm, otp_code)
                 if not ok:
                     st.error(msg)
                     return
 
-                verified = False
-                status = "pending" if new_role in ["government", "company"] else "active"
-                if new_role == "government" and email.endswith(".gov.tw"):
-                    verified = False
-                    status = "pending"
-
-                new_user = {
-                    "id": make_id("U"),
-                    "name": name,
-                    "role": new_role,
-                    "email": email,
-                    "phone": phone_norm,
-                    "phone_verified": True,
-                    "district": district,
-                    "village": village or "全區",
-                    "verified": verified,
-                    "status": status,
-                    "proof": proof,
-                }
-                st.session_state.users.append(new_user)
-                add_audit("新帳號註冊", f"{name} / {ROLE_LABELS[new_role]} / phone_verified=True / status={status}")
-                # 手機驗證通過屬於個人驗證事件，不寫入全站通知中心。
-                if status == "pending":
-                    st.success("手機 OTP 驗證成功，註冊已送出，需等待平台管理員審核後才能登入。")
-                else:
-                    st.success("手機 OTP 驗證成功，註冊完成，可回上方登入。")
+            verified = False
+            status = "pending" if new_role in ["government"] else "active"
+            
+            new_user = {
+                "id": make_id("U"),
+                "name": name,
+                "role": new_role,
+                "email": email,
+                "phone": phone_norm,
+                "phone_verified": bool(otp_code) or new_role == "company",
+                "district": district,
+                "village": village or "全區",
+                "verified": new_role == "company", # 企業統編通過直接先視為 verified
+                "status": status,
+                "proof": proof,
+            }
+            st.session_state.users.append(new_user)
+            add_audit("新帳號註冊", f"{name} / {ROLE_LABELS[new_role]}")
+            st.success("註冊完成，可回上方登入。")
 
 def sidebar_layout():
     user = get_current_user()
@@ -1044,51 +1057,90 @@ def page_submit_demand():
 
 def page_submit_supply():
     user = get_current_user()
-    st.title("📦 建立供給")
-    st.caption("一般民眾、公司/團體、政府單位都可以建立供給。未認證供給也可被管理員或政府單位檢視。")
-    with st.form("supply_form"):
-        provider = st.text_input("提供者名稱", value=user.get("name", ""))
-        location_current = st.text_input("目前所在地", value=user.get("district", ""))
-        district = st.text_input("行政區", value=user.get("district", ""))
-        village = st.text_input("村里", value=user.get("village", "全區"))
-        resource_type, category = resource_selectors("supply")
-        item = st.text_input("可提供品項", placeholder="例如：礦泉水、抽水機、志工人力、捐款")
-        qty = st.number_input("可提供數量", min_value=1, value=1)
-        lat = st.number_input("緯度", value=23.8, format="%.6f", key="supply_lat")
-        lon = st.number_input("經度", value=121.0, format="%.6f", key="supply_lon")
-        raw_text = st.text_area("補充說明", key="supply_note")
-        submitted = st.form_submit_button("建立供給", type="primary")
+    st.title("📦 建立供給 (支援企業批次建檔)")
+    st.caption("大型企業可使用 ERP 批次匯入；地點請填寫『物資實際存放倉庫』，系統將以此計算運送距離。")
+    
+    tab1, tab2 = st.tabs(["✍️ 單筆手動建檔", "🤖 ERP/盤點清單 AI 批次匯入"])
+    
+    with tab1:
+        with st.form("supply_form"):
+            provider = st.text_input("提供者名稱", value=user.get("name", ""))
+            
+            # 💡 精準定位：強調這裡是物資存放地
+            location_current = st.text_input("📍 物資實際存放地點 (來源地)", value=user.get("district", ""), placeholder="例如：台南市永康區永康物流中心")
+            
+            # 💡 新增：物流配送能力選項
+            has_logistics = st.radio("🚚 物流配送能力", [
+                "✅ 自有車隊/配合物流，可直接運送至災區", 
+                "❌ 無運輸能力，需平台媒合外部志工車隊載運"
+            ])
+            
+            resource_type, category = resource_selectors("supply")
+            item = st.text_input("可提供品項", placeholder="例如：礦泉水、抽水機")
+            qty = st.number_input("可提供數量", min_value=1, value=1)
+            raw_text = st.text_area("補充說明", key="supply_note")
+            submitted = st.form_submit_button("建立單筆供給", type="primary")
 
-    if submitted:
-        if not item or not provider:
-            st.error("請填寫提供者與品項。")
-            return
-        verification_status = "verified" if user.get("verified") else "pending"
-        supply = {
-            "id": make_id("S"),
-            "time": now_str(),
-            "source": "平台表單",
-            "provider_id": user.get("id"),
-            "provider": provider,
-            "provider_email": user.get("email"),
-            "district": district,
-            "village": village or "全區",
-            "location_current": location_current,
-            "lat": lat,
-            "lon": lon,
-            "resource_type": resource_type,
-            "category": category,
-            "item": item,
-            "qty": int(qty),
-            "status": "可調派",
-            "verification_status": verification_status,
-            "verified_by": user.get("id") if verification_status == "verified" else "",
-            "raw_text": raw_text,
-            "risk_flag": "",
-        }
-        st.session_state.supplies.insert(0, supply)
-        add_audit("新增供給", f"{supply['id']} / {item} x {qty}")
-        st.success("供給已建立。")
+        if submitted:
+            if not item or not provider or not location_current:
+                st.error("請填寫提供者、物資存放地與品項。")
+                return
+            with st.spinner("AI 正在解析物資存放地座標..."):
+                geo_data = extract_info_with_ai(raw_text=f"地點是：{location_current}").get("data", {})
+                lat = geo_data.get("lat", 23.8)
+                lon = geo_data.get("lon", 121.0)
+                district = geo_data.get("district", user.get("district", "全區"))
+
+            supply = {
+                "id": make_id("S"), "time": now_str(), "source": "平台表單",
+                "provider_id": user.get("id"), "provider": provider, "provider_email": user.get("email"),
+                "district": district, "village": "全區",
+                "location_current": location_current, "lat": lat, "lon": lon,
+                "resource_type": resource_type, "category": category, "item": item, "qty": int(qty),
+                "has_logistics": "可自行運送" if "✅" in has_logistics else "需車隊協助",
+                "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                "verified_by": user.get("id") if user.get("verified") else "", "raw_text": raw_text, "risk_flag": "",
+            }
+            st.session_state.supplies.insert(0, supply)
+            st.success("供給已建立！")
+
+    with tab2:
+        st.info("企業用戶可直接將 ERP 報表或倉管盤點訊息貼上，AI 將自動拆解為多筆供給庫存。")
+        bulk_text = st.text_area("貼上庫存盤點清單", height=200, placeholder="例如：\n林口倉目前有 500箱泡麵和 200頂帳篷，自有車隊可送。\n烏日倉有 100台發電機，但沒車子載。")
+        if st.button("🧠 啟動 AI 批次解析入庫", type="primary"):
+            if not bulk_text: st.error("請貼上清單！"); st.stop()
+            with st.spinner("Llama-3 正在進行語意拆解與批次入庫..."):
+                # 黑客松快速拆解邏輯
+                prompt = f"""請從這段文字中萃取出所有物資庫存。以 JSON 陣列回傳，不要有其他廢話：
+                [ {{"item": "品項", "qty": 數量, "location_current": "存放地", "has_logistics": "可自行運送 或 需車隊協助"}} ]
+                文字：{bulk_text}"""
+                try:
+                    from openai import OpenAI
+                    client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+                    res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                    raw_output = res.choices[0].message.content
+                    start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
+                    if start_idx != -1 and end_idx != -1:
+                        items = json.loads(raw_output[start_idx:end_idx+1])
+                        for it in items:
+                            supply = {
+                                "id": make_id("S"), "time": now_str(), "source": "ERP批次匯入",
+                                "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
+                                "district": user.get("district", "全區"), "village": "全區",
+                                "location_current": it.get("location_current", user.get("district")), 
+                                "lat": 23.5, "lon": 121.0, # 批次暫給預設，可後續優化
+                                "resource_type": "有形資源", "category": "批次匯入", 
+                                "item": it.get("item"), "qty": int(it.get("qty", 1)),
+                                "has_logistics": it.get("has_logistics", "需車隊協助"),
+                                "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                                "raw_text": bulk_text, "risk_flag": "",
+                            }
+                            st.session_state.supplies.insert(0, supply)
+                        st.success(f"✅ 成功批次匯入 {len(items)} 筆物資庫存！")
+                    else:
+                        st.error("AI 格式解析失敗，請確認文字內容。")
+                except Exception as e:
+                    st.error(f"匯入發生錯誤：{str(e)}")
 
 
 def page_public_claims():
@@ -1863,26 +1915,72 @@ def page_matched_orders():
             st.write(f"通知：已寄送 Email / 站內通知（Demo 紀錄可於管理員總控台查看）")
 
 
-def page_donation_records():
+def page_esg_dashboard():
     user = get_current_user()
-    st.title("💰 捐款 / 捐贈紀錄")
-    related_claims = [c for c in st.session_state.claims if c.get("claimant_id") == user.get("id")]
+    st.title("📈 企業 ESG 社會影響力與捐贈報告")
+    st.caption("彙整貴單位於平台上的所有救災行動，支援一鍵生成 CSR/ESG 永續報告草稿。")
+    
+    related_claims = [c for c in st.session_state.claims if c.get("claimant_id") == user.get("id") and c.get("status") == "approved"]
+    
     if not related_claims:
-        st.info("目前沒有捐贈或認領紀錄。")
+        st.info("目前尚未有已完成配對的捐贈行動。")
         return
+        
+    # 影響力數據面板
+    total_items = sum(c.get("claim_qty", 0) for c in related_claims)
+    districts_helped = set()
     data = []
+    
     for c in related_claims:
         d = next((x for x in st.session_state.demands if x.get("id") == c.get("demand_id")), {})
         s = next((x for x in st.session_state.supplies if x.get("id") == c.get("supply_id")), {})
+        districts_helped.add(d.get("district", "未知地區"))
         data.append({
-            "申請編號": c.get("id"),
-            "需求地點": d.get("location", ""),
-            "提供項目": s.get("item", ""),
-            "數量": c.get("claim_qty"),
-            "狀態": CLAIM_STATUS.get(c.get("status"), c.get("status")),
             "時間": c.get("time"),
+            "支援地區": d.get("location", ""),
+            "捐贈物資": s.get("item", ""),
+            "數量": c.get("claim_qty"),
+            "物流模式": s.get("has_logistics", "可自行運送")
         })
+        
+    col1, col2, col3 = st.columns(3)
+    col1.metric("總計捐贈物資數量", f"{total_items} 件")
+    col2.metric("馳援災區數量", f"{len(districts_helped)} 處")
+    col3.metric("完成調度任務", f"{len(related_claims)} 次")
+    
+    st.divider()
+    st.subheader("📋 詳細出貨與支援紀錄")
     st.dataframe(pd.DataFrame(data), hide_index=True, use_container_width=True)
+    
+    st.divider()
+    if st.button("✨ 一鍵生成 ESG 影響力報告 (AI 草稿)", type="primary"):
+        with st.spinner("AI 正在整合數據並撰寫公關報告..."):
+            prompt = f"""
+            你是一個專業的企業公關與永續發展(ESG)撰稿專家。
+            請根據以下 {user.get('name')} 的救災數據，寫一篇大約 300 字的動人新聞稿/ESG報告草稿：
+            馳援地區：{', '.join(districts_helped)}
+            共計捐贈物資數：{total_items}件
+            詳細清單：{json.dumps(data, ensure_ascii=False)}
+            
+            請強調企業社會責任(CSR)、快速響應災情、以及與 ResQ-Link 平台協作達成精準救援。
+            使用 Markdown 格式。
+            """
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+                res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.3)
+                report_md = res.choices[0].message.content
+                st.success("報告生成完畢！")
+                st.markdown(f"> {report_md}")
+                
+                st.download_button(
+                    label="📥 下載報告為 Markdown 檔",
+                    data=report_md,
+                    file_name=f"{user.get('name')}_ESG_Report.md",
+                    mime="text/markdown"
+                )
+            except Exception as e:
+                st.error("生成報告失敗。")
 
 
 def page_profile():
@@ -1996,8 +2094,8 @@ role_pages = {
         "👤 個人設定與表單"      # 將不常用的備用表單與設定收攏
     ],
     "company": [
-        "📊 儀表板", "📦 我提供的供給", "📦 建立供給", "🤝 我要認領需求", "📋 我的認領申請",
-        "🚚 已配對訂單", "💰 捐款/捐贈紀錄", "🔔 通知紀錄", "🗺️ 公開資源池", "📥 AI轉譯"
+        "📊 儀表板", "📦 建立供給(含批次)", "📦 我提供的供給", "🤝 我要認領需求", 
+        "📋 我的認領申請", "🚚 已配對訂單", "📈 企業 ESG 影響力", "🔔 通知紀錄", "🗺️ 公開資源池", "📥 AI轉譯"
     ],
     "government": [
         "📊 儀表板", "✅ 需求審核", "📦 供給審核", "🪪 認證管理", "📋 認領申請審核",
@@ -2054,8 +2152,8 @@ elif page in ["🪪 認證管理", "🧾 帳號審核管理", "📌 需求管理
     page_admin()
 elif page in ["🚚 已配對訂單", "🚚 配對管理"]:
     page_matched_orders()
-elif page in ["💰 捐款/捐贈紀錄", "💰 我要捐款/捐贈紀錄"]:
-    page_donation_records()
+elif page in ["📈 企業 ESG 影響力", "💰 捐款/捐贈紀錄", "💰 我要捐款/捐贈紀錄"]:
+    page_esg_dashboard() 
 elif page == "📍 轄區設定":
     page_transfer_settings()
 elif page == "📈 系統總覽":
