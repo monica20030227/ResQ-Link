@@ -6,7 +6,7 @@ import smtplib
 import random
 import re
 from email.mime.text import MIMEText
-from email.mime.muㄑltipart import MIMEMultipart
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 
 import pandas as pd
