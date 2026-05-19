@@ -525,39 +525,55 @@ def ai_match_resources(target_demand, available_supplies):
 # 4. 核心業務邏輯
 # =========================================================
 def simple_match_check(demand, supply, claim_qty):
-    reasons = []
-    score = 0
-
+    """
+    使用 Groq AI 動態評估認領申請的合理性與分數 (取代舊版寫死的 if-else)
+    """
     if claim_qty <= 0:
         return False, 0, "認領數量需大於 0"
     if supply.get("qty", 0) < claim_qty:
         return False, 0, "供給方庫存不足，無法認領該數量"
     if demand.get("qty", 0) <= 0:
         return False, 0, "需求已被滿足"
+        
+    if not GROQ_API_KEY:
+        return True, 60, "未設定 API Key，系統給予基礎及格分待人工審核"
 
-    if demand.get("resource_type") == supply.get("resource_type"):
-        score += 25
-        reasons.append("資源型態一致")
-    if demand.get("category") == supply.get("category"):
-        score += 25
-        reasons.append("分類一致")
-    if str(demand.get("item", "")) in str(supply.get("item", "")) or str(supply.get("item", "")) in str(demand.get("item", "")):
-        score += 25
-        reasons.append("品項語意高度接近")
-    if demand.get("district") == supply.get("district"):
-        score += 15
-        reasons.append("同行政區，配送風險較低")
-    if demand.get("verification_status") == "verified":
-        score += 5
-        reasons.append("需求已認證")
-    if supply.get("verification_status") == "verified":
-        score += 5
-        reasons.append("供給已認證")
-
-    passed = score >= 45
-    if not reasons:
-        reasons.append("分類或品項關聯不足")
-    return passed, score, "、".join(reasons)
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+        
+        prompt = f"""
+        你是一個高階防災資源審查 AI。
+        有一筆民眾/企業發起的「資源認領申請」，請評估供給方是否適合滿足需求方。
+        
+        【需求資訊】：分類({demand.get('category')}) / 品項({demand.get('item')}) / 地區({demand.get('district')}) / 認證狀態({demand.get('verification_status')})
+        【供給資訊】：分類({supply.get('category')}) / 品項({supply.get('item')}) / 地區({supply.get('district')}) / 認證狀態({supply.get('verification_status')})
+        【欲認領數量】：{claim_qty}
+        
+        請依據「品項語意是否吻合」、「地理位置運送難易度」、「雙方認證可信度」給予 0~100 的綜合評分。
+        若分數 >= 45 視為及格 (passed: true)。
+        
+        請嚴格輸出 JSON 格式：
+        {{
+            "passed": true 或 false,
+            "score": 整數分數,
+            "reason": "詳細的評估理由"
+        }}
+        """
+        res = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0
+        )
+        raw_output = res.choices[0].message.content
+        start_idx = raw_output.find("{")
+        end_idx = raw_output.rfind("}")
+        if start_idx != -1 and end_idx != -1:
+            data = json.loads(raw_output[start_idx : end_idx + 1])
+            return data.get("passed", False), data.get("score", 0), data.get("reason", "AI 評估完成")
+        return False, 0, "AI 格式回傳異常"
+    except Exception as e:
+        return False, 0, f"AI 評估出錯: {str(e)}"
 
 
 
