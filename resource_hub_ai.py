@@ -294,13 +294,35 @@ def is_logged_in():
 
 
 def can_gov_review(gov_user, record):
+    """
+    審查政府單位是否具備該筆紀錄的管轄權 (升級版：支援模糊行政區與全區互通機制)
+    """
     if not gov_user or gov_user.get("role") != "government":
         return False
+        
+    # 平台管理員或設定為「全區」的最高指揮官直接放行
     if gov_user.get("district") == "全區":
         return True
-    same_district = gov_user.get("district") == record.get("district")
-    gov_village = gov_user.get("village", "全區")
-    same_village = gov_village in ["全區", ""] or gov_village == record.get("village")
+
+    # 1. 💡 行政區雙向包含比對 (容錯「花蓮縣壽豐鄉」與「壽豐鄉」或「花蓮壽豐」)
+    gov_dist = str(gov_user.get("district") or "").strip()
+    rec_dist = str(record.get("district") or "").strip()
+    
+    if not gov_dist or not rec_dist:
+        return False
+        
+    same_district = (gov_dist in rec_dist) or (rec_dist in gov_dist)
+
+    # 2. 💡 村里範圍互通邏輯
+    # 只要符合以下任一條件即具備管轄權：
+    # - 政府官員是行政區總窗口 (gov_village 為 "全區" 或 空值)
+    # - 民眾通報影響範圍涵蓋全區 (rec_village 為 "全區" 或 空值，基層官員皆應能審查)
+    # - 政府官員的轄區里與民眾通報的里完全一致
+    gov_village = str(gov_user.get("village") or "全區").strip()
+    rec_village = str(record.get("village") or "全區").strip()
+    
+    same_village = (gov_village in ["全區", ""]) or (rec_village in ["全區", ""]) or (gov_village == rec_village)
+
     return same_district and same_village
 
 
