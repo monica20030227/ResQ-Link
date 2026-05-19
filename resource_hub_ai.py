@@ -6,7 +6,7 @@ import smtplib
 import random
 import re
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from email.mime.muㄑltipart import MIMEMultipart
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -1060,21 +1060,17 @@ def page_submit_supply():
     st.title("📦 建立供給 (支援企業批次建檔)")
     st.caption("大型企業可使用 ERP 批次匯入；地點請填寫『物資實際存放倉庫』，系統將以此計算運送距離。")
     
+    # 確保 session_state 裡有預覽區的暫存變數
+    if "preview_supplies" not in st.session_state:
+        st.session_state.preview_supplies = None
+        
     tab1, tab2 = st.tabs(["✍️ 單筆手動建檔", "🤖 ERP/盤點清單 AI 批次匯入"])
     
     with tab1:
         with st.form("supply_form"):
             provider = st.text_input("提供者名稱", value=user.get("name", ""))
-            
-            # 💡 精準定位：強調這裡是物資存放地
             location_current = st.text_input("📍 物資實際存放地點 (來源地)", value=user.get("district", ""), placeholder="例如：台南市永康區永康物流中心")
-            
-            # 💡 新增：物流配送能力選項
-            has_logistics = st.radio("🚚 物流配送能力", [
-                "✅ 自有車隊/配合物流，可直接運送至災區", 
-                "❌ 無運輸能力，需平台媒合外部志工車隊載運"
-            ])
-            
+            has_logistics = st.radio("🚚 物流配送能力", ["✅ 自有車隊/配合物流，可直接運送至災區", "❌ 無運輸能力，需平台媒合外部志工車隊載運"])
             resource_type, category = resource_selectors("supply")
             item = st.text_input("可提供品項", placeholder="例如：礦泉水、抽水機")
             qty = st.number_input("可提供數量", min_value=1, value=1)
@@ -1106,41 +1102,56 @@ def page_submit_supply():
 
     with tab2:
         st.info("企業用戶可直接將 ERP 報表或倉管盤點訊息貼上，AI 將自動拆解為多筆供給庫存。")
-        bulk_text = st.text_area("貼上庫存盤點清單", height=200, placeholder="例如：\n林口倉目前有 500箱泡麵和 200頂帳篷，自有車隊可送。\n烏日倉有 100台發電機，但沒車子載。")
-        if st.button("🧠 啟動 AI 批次解析入庫", type="primary"):
-            if not bulk_text: st.error("請貼上清單！"); st.stop()
-            with st.spinner("Llama-3 正在進行語意拆解與批次入庫..."):
-                # 黑客松快速拆解邏輯
-                prompt = f"""請從這段文字中萃取出所有物資庫存。以 JSON 陣列回傳，不要有其他廢話：
-                [ {{"item": "品項", "qty": 數量, "location_current": "存放地", "has_logistics": "可自行運送 或 需車隊協助"}} ]
-                文字：{bulk_text}"""
-                try:
-                    from openai import OpenAI
-                    client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-                    res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
-                    raw_output = res.choices[0].message.content
-                    start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
-                    if start_idx != -1 and end_idx != -1:
-                        items = json.loads(raw_output[start_idx:end_idx+1])
-                        for it in items:
-                            supply = {
-                                "id": make_id("S"), "time": now_str(), "source": "ERP批次匯入",
-                                "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
-                                "district": user.get("district", "全區"), "village": "全區",
-                                "location_current": it.get("location_current", user.get("district")), 
-                                "lat": 23.5, "lon": 121.0, # 批次暫給預設，可後續優化
-                                "resource_type": "有形資源", "category": "批次匯入", 
-                                "item": it.get("item"), "qty": int(it.get("qty", 1)),
-                                "has_logistics": it.get("has_logistics", "需車隊協助"),
-                                "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
-                                "raw_text": bulk_text, "risk_flag": "",
-                            }
-                            st.session_state.supplies.insert(0, supply)
-                        st.success(f"✅ 成功批次匯入 {len(items)} 筆物資庫存！")
-                    else:
-                        st.error("AI 格式解析失敗，請確認文字內容。")
-                except Exception as e:
-                    st.error(f"匯入發生錯誤：{str(e)}")
+        bulk_text = st.text_area("貼上庫存盤點清單", height=150, placeholder="例如：林口倉目前有 500箱泡麵，自有車隊可送。烏日倉有 100台發電機，需車隊協助。")
+        
+        if st.button("🧠 啟動 AI 批次解析", type="primary"):
+            if not bulk_text: 
+                st.error("請貼上清單！")
+            else:
+                with st.spinner("Llama-3 正在進行語意拆解與推算座標..."):
+                    prompt = f"""請從以下文字萃取出物資庫存。請嚴格以 JSON 陣列回傳，不要有 Markdown 標記或其他文字：
+                    [ {{"item": "品項", "qty": 數量, "location_current": "存放地", "has_logistics": "可自行運送 或 需車隊協助", "lat": 緯度浮點(若無法判斷填23.5), "lon": 經度浮點(若無法判斷填121.0)}} ]
+                    文字：{bulk_text}"""
+                    try:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        raw_output = res.choices[0].message.content
+                        start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
+                        if start_idx != -1 and end_idx != -1:
+                            st.session_state.preview_supplies = json.loads(raw_output[start_idx:end_idx+1])
+                            st.session_state.bulk_text_cache = bulk_text # 暫存供後續寫入
+                        else:
+                            st.error("AI 格式解析失敗，請確認文字內容。")
+                    except Exception as e:
+                        st.error(f"解析發生錯誤：{str(e)}")
+
+        # 💡 防盲盒機制：顯示預覽與編輯區
+        if st.session_state.preview_supplies:
+            st.markdown("### 📝 請確認解析結果 (點擊表格可直接修改)")
+            df_preview = pd.DataFrame(st.session_state.preview_supplies)
+            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True)
+            
+            if st.button("✅ 確認無誤，正式批次入庫", type="primary"):
+                for _, row in edited_df.iterrows():
+                    supply = {
+                        "id": make_id("S"), "time": now_str(), "source": "ERP批次匯入",
+                        "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
+                        "district": user.get("district", "全區"), "village": "全區",
+                        "location_current": row.get("location_current", user.get("district")), 
+                        "lat": float(row.get("lat", 23.5)), "lon": float(row.get("lon", 121.0)), 
+                        "resource_type": "有形資源", "category": "批次匯入", 
+                        "item": row.get("item"), "qty": int(row.get("qty", 1)),
+                        "has_logistics": row.get("has_logistics", "需車隊協助"),
+                        "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                        "verified_by": user.get("id") if user.get("verified") else "",
+                        "raw_text": st.session_state.get("bulk_text_cache", ""), "risk_flag": "",
+                    }
+                    st.session_state.supplies.insert(0, supply)
+                st.session_state.preview_supplies = None # 清空預覽
+                st.success(f"✅ 成功正式入庫 {len(edited_df)} 筆物資！")
+                time.sleep(1.5)
+                st.rerun()
 
 
 def page_public_claims():
@@ -1896,6 +1907,7 @@ def page_matched_orders():
     user = get_current_user()
     st.title("🚚 已配對訂單 / 配送進度")
     related = []
+    
     for c in st.session_state.claims:
         if c.get("status") != "approved":
             continue
@@ -1905,14 +1917,43 @@ def page_matched_orders():
             continue
         if user.get("role") in ["admin", "government"] or c.get("claimant_id") == user.get("id") or d.get("requester_id") == user.get("id"):
             related.append((c, d, s))
+            
     if not related:
         st.info("目前沒有已核准的配對訂單。")
         return
+        
     for c, d, s in related:
+        # 💡 初始化訂單的物流狀態
+        if "fulfillment_status" not in c:
+            c["fulfillment_status"] = "待出貨"
+            
         with st.container(border=True):
-            st.markdown(f"### ✅ 訂單 {c.get('id')}｜{s.get('provider')} → {d.get('location')}")
-            st.write(f"物資：{d.get('item')} x {c.get('claim_qty')}｜需求狀態：{d.get('status')}")
-            st.write(f"通知：已寄送 Email / 站內通知（Demo 紀錄可於管理員總控台查看）")
+            st.markdown(f"### ✅ 訂單 {c.get('id')}｜{s.get('provider')} ➡️ {d.get('location')}")
+            
+            col_info, col_action = st.columns([2, 1])
+            with col_info:
+                st.write(f"📦 物資：**{d.get('item')} x {c.get('claim_qty')}**")
+                st.write(f"🚚 模式：{s.get('has_logistics', '可自行運送')}")
+                
+                # 依據狀態顯示不同顏色
+                status_color = "red" if c["fulfillment_status"] == "待出貨" else ("orange" if c["fulfillment_status"] == "已出貨" else "green")
+                st.markdown(f"**配送狀態：<span style='color:{status_color}'>{c['fulfillment_status']}</span>**", unsafe_allow_html=True)
+            
+            with col_action:
+                st.write("") # 排版用
+                # 💡 供給方(企業) 的視角：標記出貨
+                if user.get("id") == s.get("provider_id") and c["fulfillment_status"] == "待出貨":
+                    if st.button("🚚 標記為『已出貨』", key=f"ship_{c['id']}", use_container_width=True):
+                        c["fulfillment_status"] = "已出貨"
+                        add_notification(f"物流更新：訂單 {c['id']} 物資已出發前往 {d.get('location')}", "logistics")
+                        st.rerun()
+                        
+                # 💡 需求方(災民/村長) 的視角：確認收妥
+                elif user.get("id") == d.get("requester_id") and c["fulfillment_status"] == "已出貨":
+                    if st.button("✅ 確認『已安全送達』", key=f"deliver_{c['id']}", type="primary", use_container_width=True):
+                        c["fulfillment_status"] = "已完成(收妥)"
+                        add_notification(f"任務結案：訂單 {c['id']} 物資已安全送達災民手中！", "logistics")
+                        st.rerun()
 
 
 def page_esg_dashboard():
@@ -2127,11 +2168,21 @@ elif page == "📌 我的紀錄":
     with tab3: page_my_claims()
 elif page == "👤 個人設定與表單":
     st.title("👤 設定與備用表單")
-    tab1, tab2, tab3, tab4 = st.tabs(["個人資料", "通知紀錄", "填寫需求表單", "填寫供給表單"])
-    with tab1: page_profile()
-    with tab2: st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
-    with tab3: page_submit_demand()
-    with tab4: page_submit_supply()
+    if role == "company":
+        tabs = st.tabs(["個人資料", "通知紀錄", "填寫供給表單"])
+        with tabs[0]: page_profile()
+        with tabs[1]: st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
+        with tabs[2]: page_submit_supply()
+    elif role in ["government", "citizen"]:
+        tabs = st.tabs(["個人資料", "通知紀錄", "填寫需求表單", "填寫供給表單"])
+        with tabs[0]: page_profile()
+        with tabs[1]: st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
+        with tabs[2]: page_submit_demand()
+        with tabs[3]: page_submit_supply()
+    else: # admin 等其他角色
+        tabs = st.tabs(["個人資料", "通知紀錄"])
+        with tabs[0]: page_profile()
+        with tabs[1]: st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
     
 # 以下保留給其他角色（企業、政府、管理員）的原始路由
 elif page in ["📣 提出需求", "📣 我要提出需求"]:
