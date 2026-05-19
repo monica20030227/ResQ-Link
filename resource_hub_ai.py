@@ -967,18 +967,14 @@ def page_home():
 
 def page_submit_demand():
     user = get_current_user()
-    st.title("📣 提出需求")
-    st.caption("一般民眾提出後會標示為待認證；政府單位提出會直接顯示已認證。")
+    st.title("📣 提出需求 (備用表單)")
+    st.caption("建議優先使用左側『💬 智慧對話通報』。本表單經緯度將由系統 AI 自動定位。")
     with st.form("demand_form"):
-        location = st.text_input("需求地點", value=user.get("district", ""))
-        district = st.text_input("行政區", value=user.get("district", ""))
-        village = st.text_input("村里", value=user.get("village", "全區"))
+        location = st.text_input("需求地點 (請填寫完整地址或地標，系統將自動定位)", value=user.get("district", ""))
         resource_type, category = resource_selectors("demand")
-        item = st.text_input("需求品項", placeholder="例如：礦泉水、抽水機、志工人力")
+        item = st.text_input("需求品項", placeholder="例如：礦泉水、抽水機")
         qty = st.number_input("需求數量", min_value=1, value=1)
         urgency = st.slider("緊急程度", 1, 5, 3)
-        lat = st.number_input("緯度", value=23.8, format="%.6f")
-        lon = st.number_input("經度", value=121.0, format="%.6f")
         raw_text = st.text_area("補充說明")
         submitted = st.form_submit_button("送出需求", type="primary")
 
@@ -986,6 +982,15 @@ def page_submit_demand():
         if not item or not location:
             st.error("請填寫地點與品項。")
             return
+            
+        with st.spinner("系統正在定位您的地址..."):
+            # 利用我們寫好的 AI 函數，自動推算地址的經緯度與正規化行政區
+            ai_geo_result = extract_info_with_ai(raw_text=f"地點是：{location}")
+            geo_data = ai_geo_result.get("data", {})
+            auto_lat = geo_data.get("lat", 23.8)
+            auto_lon = geo_data.get("lon", 121.0)
+            auto_district = geo_data.get("district", user.get("district", ""))
+        
         verification_status = "verified" if user.get("role") == "government" and user.get("verified") else "pending"
         demand = {
             "id": make_id("D"),
@@ -994,11 +999,11 @@ def page_submit_demand():
             "requester_id": user.get("id"),
             "requester_name": user.get("name"),
             "requester_email": user.get("email"),
-            "district": district,
-            "village": village or "全區",
+            "district": auto_district,
+            "village": user.get("village", "全區"),
             "location": location,
-            "lat": lat,
-            "lon": lon,
+            "lat": auto_lat,         # 💡 AI 自動定位
+            "lon": auto_lon,         # 💡 AI 自動定位
             "resource_type": resource_type,
             "category": category,
             "item": item,
@@ -1013,12 +1018,7 @@ def page_submit_demand():
         }
         st.session_state.demands.insert(0, demand)
         add_audit("新增需求", f"{demand['id']} / {item} x {qty}")
-        if verification_status == "pending":
-            add_notification(f"🟡 新民眾需求待地方政府審核：{district} {item}", "review")
-            st.success("需求已送出，目前為待認證。")
-        else:
-            st.success("政府單位需求已送出，並標示為已認證。")
-
+        st.success(f"需求已送出！已自動將您的座標定位於 ({auto_lat}, {auto_lon})。")
 
 def page_submit_supply():
     user = get_current_user()
@@ -1967,8 +1967,11 @@ role = user.get("role")
 # 依架構圖顯示不同角色的功能選單
 role_pages = {
     "citizen": [
-        "📊 儀表板", "📌 我的需求", "📣 我要提出需求", "🤝 我要認領需求", "📋 我的認領申請",
-        "💰 我要捐款/捐贈紀錄", "🔔 通知紀錄", "👤 個人資料", "🗺️ 公開資源池", "💬 對話通報", "📥 AI轉譯"
+        "💬 智慧對話通報",       # 💡 改為第一順位，主推對話體驗
+        "🗺️ 災情與資源地圖",     # 整合公開資源池
+        "🤝 協助與認領",         # 整合我要認領需求
+        "📌 我的紀錄",           # 整合我的需求、供給、捐贈紀錄
+        "👤 個人設定與表單"      # 將不常用的備用表單與設定收攏
     ],
     "company": [
         "📊 儀表板", "📦 我提供的供給", "📦 建立供給", "🤝 我要認領需求", "📋 我的認領申請",
@@ -1985,18 +1988,38 @@ role_pages = {
 
 page = st.sidebar.radio("功能選單", role_pages.get(role, ["📊 儀表板"]))
 
-if page in ["🏠 首頁", "📊 儀表板"]:
+# =========================================================
+# 💡 重新綁定精簡後的路由與舊有路由
+# =========================================================
+if page in ["💬 智慧對話通報", "💬 對話通報"]:
+    page_chatbot()
+elif page in ["🏠 首頁", "📊 儀表板"]:
     page_role_dashboard()
+elif page in ["🗺️ 資源池", "🗺️ 公開資源池", "🗺️ 災情與資源地圖"]:
+    page_map_pool()
+elif page in ["🤝 我要認領需求", "🤝 協助與認領"]:
+    page_public_claims()
+elif page == "📌 我的紀錄":
+    st.title("📌 我的通報與認領紀錄")
+    tab1, tab2, tab3 = st.tabs(["我的需求", "我的供給", "我的認領申請"])
+    with tab1: page_my_demands()
+    with tab2: page_my_supplies()
+    with tab3: page_my_claims()
+elif page == "👤 個人設定與表單":
+    st.title("👤 設定與備用表單")
+    tab1, tab2, tab3, tab4 = st.tabs(["個人資料", "通知紀錄", "填寫需求表單", "填寫供給表單"])
+    with tab1: page_profile()
+    with tab2: st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
+    with tab3: page_submit_demand()
+    with tab4: page_submit_supply()
+    
+# 以下保留給其他角色（企業、政府、管理員）的原始路由
 elif page in ["📣 提出需求", "📣 我要提出需求"]:
     page_submit_demand()
-elif page == "📌 我的需求":
-    page_my_demands()
 elif page in ["📦 建立供給"]:
     page_submit_supply()
 elif page == "📦 我提供的供給":
     page_my_supplies()
-elif page == "🤝 我要認領需求":
-    page_public_claims()
 elif page == "📋 我的認領申請":
     page_my_claims()
 elif page in ["✅ 需求審核", "📋 認領申請審核"]:
@@ -2005,12 +2028,8 @@ elif page == "📦 供給審核":
     page_gov_supply_review()
 elif page == "🧠 智慧配對審核":
     page_smart_match_review()
-elif page in ["🪪 認證管理", "🧾 帳號審核管理", "📌 需求管理", "📦 供給管理", "📋 認領申請總審核", "🔔 通知與Email紀錄", "📜 稽核紀錄"]:
+elif page in ["🪪 認證管理", "🧾 帳號審核管理", "📌 需求管理", "📦 供給管理", "📋 認領申請總審核", "🔔 通知與Email紀錄", "📜 稽核紀錄", "🛡️ 管理員總控台"]:
     page_admin()
-elif page == "🛡️ 管理員總控台":
-    page_admin()
-elif page in ["🗺️ 資源池", "🗺️ 公開資源池"]:
-    page_map_pool()
 elif page in ["🚚 已配對訂單", "🚚 配對管理"]:
     page_matched_orders()
 elif page in ["💰 捐款/捐贈紀錄", "💰 我要捐款/捐贈紀錄"]:
@@ -2025,8 +2044,6 @@ elif page == "🤖 AI調配":
     page_ai_match()
 elif page == "📥 AI轉譯":
     page_multimodal()
-elif page == "💬 對話通報":
-    page_chatbot()
 elif page == "🔔 通知紀錄":
     st.title("🔔 通知紀錄")
     st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
