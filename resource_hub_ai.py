@@ -1004,22 +1004,25 @@ def page_submit_demand():
     user = get_current_user()
     st.title("📣 提出需求 (備用表單)")
     st.caption("建議優先使用左側『💬 智慧對話通報』。本表單經緯度將由系統 AI 自動定位。")
+    
     with st.form("demand_form"):
-        location = st.text_input("需求地點 (請填寫完整地址或地標，系統將自動定位)", value=user.get("district", ""))
+        # 💡 全面升級 Placeholder 與 Help 提示
+        location = st.text_input("📍 需求地點 (請填寫完整地址或地標)", value=user.get("district", ""), placeholder="範例：花蓮縣壽豐鄉中山路100號", help="格式要求：需包含縣市與鄉鎮區，以利 AI 轉換經緯度。")
         resource_type, category = resource_selectors("demand")
-        item = st.text_input("需求品項", placeholder="例如：礦泉水、抽水機")
-        qty = st.number_input("需求數量", min_value=1, value=1)
-        urgency = st.slider("緊急程度", 1, 5, 3)
-        raw_text = st.text_area("補充說明")
-        submitted = st.form_submit_button("送出需求", type="primary")
+        item = st.text_input("📦 需求品項", placeholder="範例：大型抽水機、礦泉水、睡袋", help="請具體說明需要的物資名稱，切勿填寫模糊字眼。")
+        qty = st.number_input("🔢 需求數量", min_value=1, value=1, help="必須大於 0 的整數。")
+        urgency = st.slider("🚨 緊急程度 (1最低 - 5最高)", 1, 5, 3, help="5分為危及生命財產安全，1分為預防性儲備。")
+        raw_text = st.text_area("📝 補充說明 (選填)", placeholder="例如：道路中斷，僅能以直升機或輕裝徒步進入。")
+        
+        submitted = st.form_submit_button("🚀 送出需求", type="primary")
 
     if submitted:
-        if not item or not location:
-            st.error("請填寫地點與品項。")
+        # 💡 表單端的明確防呆與失敗回饋
+        if not item.strip() or not location.strip():
+            st.error("❌ 送出失敗：『需求地點』與『需求品項』為必填欄位，不得為空。")
             return
             
-        with st.spinner("系統正在定位您的地址..."):
-            # 利用我們寫好的 AI 函數，自動推算地址的經緯度與正規化行政區
+        with st.spinner("系統正在定位您的地址並建檔..."):
             ai_geo_result = extract_info_with_ai(raw_text=f"地點是：{location}")
             geo_data = ai_geo_result.get("data", {})
             auto_lat = geo_data.get("lat", 23.8)
@@ -1028,39 +1031,24 @@ def page_submit_demand():
         
         verification_status = "verified" if user.get("role") == "government" and user.get("verified") else "pending"
         demand = {
-            "id": make_id("D"),
-            "time": now_str(),
-            "source": "平台表單",
-            "requester_id": user.get("id"),
-            "requester_name": user.get("name"),
-            "requester_email": user.get("email"),
-            "district": auto_district,
-            "village": user.get("village", "全區"),
-            "location": location,
-            "lat": auto_lat,         # 💡 AI 自動定位
-            "lon": auto_lon,         # 💡 AI 自動定位
-            "resource_type": resource_type,
-            "category": category,
-            "item": item,
-            "qty": int(qty),
-            "urgency": urgency,
-            "status": "未處理",
-            "matched_provider": "",
-            "verification_status": verification_status,
-            "verified_by": user.get("id") if verification_status == "verified" else "",
-            "raw_text": raw_text,
-            "risk_flag": "",
+            "id": make_id("D"), "time": now_str(), "source": "平台表單",
+            "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
+            "district": auto_district, "village": user.get("village", "全區"),
+            "location": location, "lat": auto_lat, "lon": auto_lon,
+            "resource_type": resource_type, "category": category, "item": item, "qty": int(qty),
+            "urgency": urgency, "status": "未處理", "matched_provider": "",
+            "verification_status": verification_status, "verified_by": user.get("id") if verification_status == "verified" else "",
+            "raw_text": raw_text, "risk_flag": "",
         }
         st.session_state.demands.insert(0, demand)
-        add_audit("新增需求", f"{demand['id']} / {item} x {qty}")
-        st.success(f"需求已送出！已自動將您的座標定位於 ({auto_lat}, {auto_lon})。")
+        # 💡 成功回饋
+        st.success(f"✅ 需求已成功送出！已立案編號：{demand['id']}，並自動定位您的座標於 ({auto_lat}, {auto_lon})。")
+
 
 def page_submit_supply():
     user = get_current_user()
     st.title("📦 建立供給 (支援企業批次建檔)")
-    st.caption("大型企業可使用 ERP 批次匯入；地點請填寫『物資實際存放倉庫』，系統將以此計算運送距離。")
     
-    # 確保 session_state 裡有預覽區的暫存變數
     if "preview_supplies" not in st.session_state:
         st.session_state.preview_supplies = None
         
@@ -1068,18 +1056,18 @@ def page_submit_supply():
     
     with tab1:
         with st.form("supply_form"):
-            provider = st.text_input("提供者名稱", value=user.get("name", ""))
-            location_current = st.text_input("📍 物資實際存放地點 (來源地)", value=user.get("district", ""), placeholder="例如：台南市永康區永康物流中心")
+            provider = st.text_input("🏢 提供者名稱", value=user.get("name", ""), placeholder="範例：統一企業、吉普車救援隊")
+            location_current = st.text_input("📍 物資實際存放地點 (來源地)", value=user.get("district", ""), placeholder="範例：台南市永康區永康物流中心", help="請填寫『物資當下所在位置』，AI將據此計算運送距離。")
             has_logistics = st.radio("🚚 物流配送能力", ["✅ 自有車隊/配合物流，可直接運送至災區", "❌ 無運輸能力，需平台媒合外部志工車隊載運"])
             resource_type, category = resource_selectors("supply")
-            item = st.text_input("可提供品項", placeholder="例如：礦泉水、抽水機")
-            qty = st.number_input("可提供數量", min_value=1, value=1)
-            raw_text = st.text_area("補充說明", key="supply_note")
-            submitted = st.form_submit_button("建立單筆供給", type="primary")
+            item = st.text_input("📦 可提供品項", placeholder="範例：礦泉水、發電機", help="具體的物資名稱。")
+            qty = st.number_input("🔢 可提供數量", min_value=1, value=1)
+            raw_text = st.text_area("📝 補充說明 (選填)", key="supply_note", placeholder="例如：效期至 2027 年底。")
+            submitted = st.form_submit_button("🚀 建立單筆供給", type="primary")
 
         if submitted:
-            if not item or not provider or not location_current:
-                st.error("請填寫提供者、物資存放地與品項。")
+            if not item.strip() or not provider.strip() or not location_current.strip():
+                st.error("❌ 送出失敗：『提供者名稱』、『物資存放地點』與『品項』為必填。")
                 return
             with st.spinner("AI 正在解析物資存放地座標..."):
                 geo_data = extract_info_with_ai(raw_text=f"地點是：{location_current}").get("data", {})
@@ -1098,7 +1086,60 @@ def page_submit_supply():
                 "verified_by": user.get("id") if user.get("verified") else "", "raw_text": raw_text, "risk_flag": "",
             }
             st.session_state.supplies.insert(0, supply)
-            st.success("供給已建立！")
+            st.success(f"✅ 成功！單筆供給 {supply['id']} 已建立完畢。")
+
+    with tab2:
+        st.info("企業用戶可直接將 ERP 報表或倉管盤點訊息貼上，AI 將自動拆解為多筆供給庫存。")
+        bulk_text = st.text_area("📄 貼上庫存盤點清單", height=150, placeholder="範例：林口倉目前有 500箱泡麵，自有車隊可送。烏日倉有 100台發電機，需車隊協助。", help="請盡量保持文意通順，包含地點、品項與數量。")
+        
+        if st.button("🧠 啟動 AI 批次解析", type="primary"):
+            if not bulk_text.strip(): 
+                st.error("❌ 啟動失敗：請貼上清單內容！")
+            else:
+                with st.spinner("Llama-3 正在進行語意拆解與推算座標..."):
+                    prompt = f"""請從以下文字萃取出物資庫存。請嚴格以 JSON 陣列回傳，不要有 Markdown 標記或其他文字：
+                    [ {{"item": "品項", "qty": 數量, "location_current": "存放地", "has_logistics": "可自行運送 或 需車隊協助", "lat": 緯度浮點(若無法判斷填23.5), "lon": 經度浮點(若無法判斷填121.0)}} ]
+                    文字：{bulk_text}"""
+                    try:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        raw_output = res.choices[0].message.content
+                        start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
+                        if start_idx != -1 and end_idx != -1:
+                            st.session_state.preview_supplies = json.loads(raw_output[start_idx:end_idx+1])
+                            st.session_state.bulk_text_cache = bulk_text
+                            st.success("✅ 解析成功！請在下方表格確認預覽結果。")
+                        else:
+                            st.error("❌ 解析失敗：AI 回傳的格式異常，請確認文字內容是否過於複雜。")
+                    except Exception as e:
+                        st.error(f"❌ 系統錯誤：{str(e)}")
+
+        if st.session_state.preview_supplies:
+            st.markdown("### 📝 請確認解析結果 (點擊表格可直接修改)")
+            df_preview = pd.DataFrame(st.session_state.preview_supplies)
+            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True)
+            
+            if st.button("✅ 確認無誤，正式批次入庫", type="primary"):
+                for _, row in edited_df.iterrows():
+                    supply = {
+                        "id": make_id("S"), "time": now_str(), "source": "ERP批次匯入",
+                        "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
+                        "district": user.get("district", "全區"), "village": "全區",
+                        "location_current": row.get("location_current", user.get("district")), 
+                        "lat": float(row.get("lat", 23.5)), "lon": float(row.get("lon", 121.0)), 
+                        "resource_type": "有形資源", "category": "批次匯入", 
+                        "item": row.get("item"), "qty": int(row.get("qty", 1)),
+                        "has_logistics": row.get("has_logistics", "需車隊協助"),
+                        "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                        "verified_by": user.get("id") if user.get("verified") else "",
+                        "raw_text": st.session_state.get("bulk_text_cache", ""), "risk_flag": "",
+                    }
+                    st.session_state.supplies.insert(0, supply)
+                st.session_state.preview_supplies = None
+                st.success(f"✅ 成功！已為您批次入庫 {len(edited_df)} 筆物資。")
+                time.sleep(1.5)
+                st.rerun()
 
     with tab2:
         st.info("企業用戶可直接將 ERP 報表或倉管盤點訊息貼上，AI 將自動拆解為多筆供給庫存。")
@@ -1487,108 +1528,148 @@ def page_ai_match():
 
 def page_multimodal():
     st.title("📥 多模態轉譯 Vision ETL")
-    st.caption("可將文字或圖片自動轉成需求/供給資料。")
+    st.caption("適用於快速將網頁截圖、手寫紙條照片轉換為標準格式。")
     col_in, col_out = st.columns(2)
+    
     with col_in:
-        uploaded_file = st.file_uploader("上傳災情或物資照片", type=["jpg", "jpeg", "png"])
-        raw_text_input = st.text_area("補充文字", placeholder="例如：我們這裡需要抽水機 5 台")
-        if st.button("🧠 啟動解析", type="primary"):
+        # 💡 提供明確的格式與要求說明
+        uploaded_file = st.file_uploader("📸 上傳災情或物資照片", type=["jpg", "jpeg", "png"], help="請上傳清晰可辨識的圖片。")
+        raw_text_input = st.text_area("✍️ 補充文字說明", placeholder="輸入範例：這是花蓮市運來的 50 頂帳篷，可供支援。", help="若圖片資訊不完整，請用文字補充品項與數量。")
+        
+        if st.button("🧠 啟動 AI 解析並建檔", type="primary"):
             img_bytes = uploaded_file.getvalue() if uploaded_file else None
             mime_type = uploaded_file.type if uploaded_file else "image/jpeg"
-            text_to_send = raw_text_input or "請根據圖片判斷災情與需求。"
-            result = extract_info_with_ai(text_to_send, img_bytes, mime_type)
+            text_to_send = raw_text_input or "請根據圖片判斷災情與需求，務必找出具體品項與數量。"
+            
+            with st.spinner("AI 正在進行多模態萃取..."):
+                result = extract_info_with_ai(text_to_send, img_bytes, mime_type)
+                
             with col_out:
+                st.subheader("🤖 AI 解析結果")
                 st.json(result)
+                
+            # 💡 失敗回饋機制
             if "error" in result:
-                st.error(result["error"])
+                st.error(f"❌ 解析失敗：{result['error']}")
                 return
-            user = get_current_user()
+                
             extracted = result.get("data", result)
+            item = extracted.get("item", "")
+            qty = extracted.get("qty", 0)
+            
+            # 💡 必填資訊驗證機制
+            if not item or item in ["未知", "無", ""]:
+                st.warning("⚠️ 建檔失敗：AI 無法從您的圖片或文字中找到『具體物資名稱』，請補充文字說明後重試。")
+                return
+            if qty <= 0:
+                st.warning("⚠️ 建檔初判失敗：AI 無法判斷『數量』，請在文字欄位中明確標示數字 (例如: 10箱)。")
+                return
+
+            user = get_current_user()
             is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
+            
             if is_demand:
                 record = {
-                    "id": make_id("D"),
-                    "time": now_str(),
-                    "source": "AI轉譯",
-                    "requester_id": user.get("id"),
-                    "requester_name": user.get("name"),
-                    "requester_email": user.get("email"),
-                    "status": "未處理",
-                    "matched_provider": "",
-                    "verification_status": "verified" if user.get("role") == "government" and user.get("verified") else "pending",
+                    "id": make_id("D"), "time": now_str(), "source": "AI轉譯",
+                    "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
+                    "status": "未處理", "matched_provider": "", "verification_status": "verified" if user.get("role") == "government" and user.get("verified") else "pending",
                     "verified_by": user.get("id") if user.get("role") == "government" and user.get("verified") else "",
-                    "raw_text": text_to_send,
-                    "risk_flag": "",
+                    "raw_text": text_to_send, "risk_flag": "",
                 }
                 record.update(extracted)
-                record.setdefault("village", "全區")
+                if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
+                if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                 st.session_state.demands.insert(0, record)
-                st.success("已寫入需求池。")
+                st.success(f"✅ 成功！已寫入一筆需求：{item} x {qty}") # 明確成功回饋
             else:
                 record = {
-                    "id": make_id("S"),
-                    "time": now_str(),
-                    "source": "AI轉譯",
-                    "provider_id": user.get("id"),
-                    "provider": extracted.get("provider") or user.get("name"),
-                    "provider_email": user.get("email"),
-                    "status": "可調派",
-                    "verification_status": "verified" if user.get("verified") else "pending",
-                    "verified_by": user.get("id") if user.get("verified") else "",
-                    "raw_text": text_to_send,
-                    "risk_flag": "",
+                    "id": make_id("S"), "time": now_str(), "source": "AI轉譯",
+                    "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
+                    "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                    "verified_by": user.get("id") if user.get("verified") else "", "raw_text": text_to_send, "risk_flag": "",
                 }
                 record.update(extracted)
-                if "location" in record and "location_current" not in record:
-                    record["location_current"] = record["location"]
-                record.setdefault("village", "全區")
+                if "location" in record and "location_current" not in record: record["location_current"] = record["location"]
+                if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
+                if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                 st.session_state.supplies.insert(0, record)
-                st.success("已寫入供給池。")
-            add_audit("AI 多模態轉譯寫入資料", "Demand" if is_demand else "Supply")
+                st.success(f"✅ 成功！已寫入一筆供給：{item} x {qty}") # 明確成功回饋
 
 
 def page_chatbot():
-    st.title("💬 前線對話通報")
+    user = get_current_user()
+    st.title("💬 智慧對話通報 (支援多模態)")
+    st.caption("您可以輸入文字或上傳照片，AI 將自動辨識您的需求或提供的物資。")
+    
+    # 💡 痛點 4 解決：AI 對話介面加入圖片上傳功能，並提供清晰的格式要求
+    uploaded_file = st.file_uploader(
+        "📸 附加現場照片 (選填，有助於 AI 精準辨識物資與災情)", 
+        type=["jpg", "jpeg", "png"], 
+        help="格式要求：支援 JPG, PNG。照片內容建議包含災情現狀或物資外觀。"
+    )
+
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-    if user_input := st.chat_input("請輸入需求或供給內容..."):
+            
+    # 💡 痛點 1 解決：明確的輸入範例
+    if user_input := st.chat_input("輸入範例：壽豐鄉中山路淹水，急需 5 台抽水機支援！"):
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
+            
         with st.chat_message("assistant"):
-            result = extract_info_with_ai(raw_text=user_input)
-            if "error" in result:
-                reply = "抱歉，AI 解析失敗。請改用表單輸入，或檢查 GROQ_API_KEY。"
-            else:
-                extracted = result.get("data", result)
-                is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
-                user = get_current_user()
-                if is_demand:
-                    record = {
-                        "id": make_id("D"), "time": now_str(), "source": "對話通報",
-                        "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
-                        "status": "未處理", "matched_provider": "", "verification_status": "pending", "verified_by": "", "raw_text": user_input, "risk_flag": "",
-                    }
-                    record.update(extracted)
-                    record.setdefault("village", "全區")
-                    st.session_state.demands.insert(0, record)
+            with st.spinner("AI 正在解析通報內容..."):
+                img_bytes = uploaded_file.getvalue() if uploaded_file else None
+                mime_type = uploaded_file.type if uploaded_file else "image/jpeg"
+                
+                result = extract_info_with_ai(raw_text=user_input, image_bytes=img_bytes, mime_type=mime_type)
+                
+                # 💡 痛點 2 & 3 解決：嚴格的錯誤回饋與必要資訊驗證
+                if "error" in result:
+                    reply = f"❌ **通報失敗**：系統解析發生錯誤 ({result['error']})，請稍後重試。"
                 else:
-                    record = {
-                        "id": make_id("S"), "time": now_str(), "source": "對話通報",
-                        "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
-                        "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending", "verified_by": "", "raw_text": user_input, "risk_flag": "",
-                    }
-                    record.update(extracted)
-                    if "location" in record and "location_current" not in record:
-                        record["location_current"] = record["location"]
-                    record.setdefault("village", "全區")
-                    st.session_state.supplies.insert(0, record)
-                reply = f"✅ 已立案：{record.get('item', '未知')} x {record.get('qty', 1)}"
+                    extracted = result.get("data", result)
+                    item = extracted.get("item", "")
+                    qty = extracted.get("qty", 0)
+                    
+                    # 嚴格擋下無效資料
+                    if not item or item in ["未知", "無", ""]:
+                        reply = "⚠️ **通報失敗 (資訊不足)**：系統無法辨識具體的「物資品項」。請重新輸入，例如：『我需要 5 台抽水機』。"
+                    elif qty <= 0:
+                        reply = "⚠️ **通報失敗 (數量異常)**：系統無法辨識有效的「數量」。請明確告知數量，例如：『提供 100 箱礦泉水』。"
+                    else:
+                        is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
+                        
+                        if is_demand:
+                            record = {
+                                "id": make_id("D"), "time": now_str(), "source": "對話通報",
+                                "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
+                                "status": "未處理", "matched_provider": "", "verification_status": "pending", "verified_by": "", "raw_text": user_input, "risk_flag": "",
+                            }
+                            record.update(extracted)
+                            # 兜底機制
+                            if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
+                            if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
+                            
+                            st.session_state.demands.insert(0, record)
+                            reply = f"✅ **立案成功**！已為您寫入需求池：{record.get('item')} x {record.get('qty')}"
+                        else:
+                            record = {
+                                "id": make_id("S"), "time": now_str(), "source": "對話通報",
+                                "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
+                                "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending", "risk_flag": "",
+                            }
+                            record.update(extracted)
+                            if "location" in record and "location_current" not in record: record["location_current"] = record["location"]
+                            if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
+                            if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
+                            
+                            st.session_state.supplies.insert(0, record)
+                            reply = f"✅ **立案成功**！感謝提供：{record.get('item')} x {record.get('qty')}"
+                
             st.markdown(reply)
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
-
-
 
 def page_smart_match_review():
     user = get_current_user()
