@@ -18,7 +18,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587")) if os.getenv("SMTP_PORT", "587").isdigit() else 587
 SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "ㄑ")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
 
 # =========================================================
@@ -1006,18 +1006,19 @@ def page_submit_demand():
     st.caption("建議優先使用左側『💬 智慧對話通報』。本表單經緯度將由系統 AI 自動定位。")
     
     with st.form("demand_form"):
-        # 💡 全面升級 Placeholder 與 Help 提示
-        location = st.text_input("📍 需求地點 (請填寫完整地址或地標)", value=user.get("district", ""), placeholder="範例：花蓮縣壽豐鄉中山路100號", help="格式要求：需包含縣市與鄉鎮區，以利 AI 轉換經緯度。")
+        # 💡 為每個元件加上專屬的 key="demand_..." 避免與其他表單衝突
+        location = st.text_input("📍 需求地點 (請填寫完整地址或地標)", value=user.get("district", ""), placeholder="範例：花蓮縣壽豐鄉中山路100號", help="格式要求：需包含縣市與鄉鎮區，以利 AI 轉換經緯度。", key="demand_location")
+        
         resource_type, category = resource_selectors("demand")
-        item = st.text_input("📦 需求品項", placeholder="範例：大型抽水機、礦泉水、睡袋", help="請具體說明需要的物資名稱，切勿填寫模糊字眼。")
-        qty = st.number_input("🔢 需求數量", min_value=1, value=1, help="必須大於 0 的整數。")
-        urgency = st.slider("🚨 緊急程度 (1最低 - 5最高)", 1, 5, 3, help="5分為危及生命財產安全，1分為預防性儲備。")
-        raw_text = st.text_area("📝 補充說明 (選填)", placeholder="例如：道路中斷，僅能以直升機或輕裝徒步進入。")
+        
+        item = st.text_input("📦 需求品項", placeholder="範例：大型抽水機、礦泉水、睡袋", help="請具體說明需要的物資名稱，切勿填寫模糊字眼。", key="demand_item")
+        qty = st.number_input("🔢 需求數量", min_value=1, value=1, help="必須大於 0 的整數。", key="demand_qty")
+        urgency = st.slider("🚨 緊急程度 (1最低 - 5最高)", 1, 5, 3, help="5分為危及生命財產安全，1分為預防性儲備。", key="demand_urgency")
+        raw_text = st.text_area("📝 補充說明 (選填)", placeholder="例如：道路中斷，僅能以直升機或輕裝徒步進入。", key="demand_raw_text")
         
         submitted = st.form_submit_button("🚀 送出需求", type="primary")
 
     if submitted:
-        # 💡 表單端的明確防呆與失敗回饋
         if not item.strip() or not location.strip():
             st.error("❌ 送出失敗：『需求地點』與『需求品項』為必填欄位，不得為空。")
             return
@@ -1041,7 +1042,6 @@ def page_submit_demand():
             "raw_text": raw_text, "risk_flag": "",
         }
         st.session_state.demands.insert(0, demand)
-        # 💡 成功回饋
         st.success(f"✅ 需求已成功送出！已立案編號：{demand['id']}，並自動定位您的座標於 ({auto_lat}, {auto_lon})。")
 
 
@@ -1056,13 +1056,17 @@ def page_submit_supply():
     
     with tab1:
         with st.form("supply_form"):
-            provider = st.text_input("🏢 提供者名稱", value=user.get("name", ""), placeholder="範例：統一企業、吉普車救援隊")
-            location_current = st.text_input("📍 物資實際存放地點 (來源地)", value=user.get("district", ""), placeholder="範例：台南市永康區永康物流中心", help="請填寫『物資當下所在位置』，AI將據此計算運送距離。")
-            has_logistics = st.radio("🚚 物流配送能力", ["✅ 自有車隊/配合物流，可直接運送至災區", "❌ 無運輸能力，需平台媒合外部志工車隊載運"])
+            # 💡 為每個元件加上專屬的 key="supply_..."
+            provider = st.text_input("🏢 提供者名稱", value=user.get("name", ""), placeholder="範例：統一企業、吉普車救援隊", key="supply_provider")
+            location_current = st.text_input("📍 物資實際存放地點 (來源地)", value=user.get("district", ""), placeholder="範例：台南市永康區永康物流中心", help="請填寫『物資當下所在位置』，AI將據此計算運送距離。", key="supply_location")
+            has_logistics = st.radio("🚚 物流配送能力", ["✅ 自有車隊/配合物流，可直接運送至災區", "❌ 無運輸能力，需平台媒合外部志工車隊載運"], key="supply_logistics")
+            
             resource_type, category = resource_selectors("supply")
-            item = st.text_input("📦 可提供品項", placeholder="範例：礦泉水、發電機", help="具體的物資名稱。")
-            qty = st.number_input("🔢 可提供數量", min_value=1, value=1)
-            raw_text = st.text_area("📝 補充說明 (選填)", key="supply_note", placeholder="例如：效期至 2027 年底。")
+            
+            item = st.text_input("📦 可提供品項", placeholder="範例：礦泉水、發電機", help="具體的物資名稱。", key="supply_item")
+            qty = st.number_input("🔢 可提供數量", min_value=1, value=1, key="supply_qty")
+            raw_text = st.text_area("📝 補充說明 (選填)", placeholder="例如：效期至 2027 年底。", key="supply_raw_text")
+            
             submitted = st.form_submit_button("🚀 建立單筆供給", type="primary")
 
         if submitted:
@@ -1090,9 +1094,11 @@ def page_submit_supply():
 
     with tab2:
         st.info("企業用戶可直接將 ERP 報表或倉管盤點訊息貼上，AI 將自動拆解為多筆供給庫存。")
-        bulk_text = st.text_area("📄 貼上庫存盤點清單", height=150, placeholder="範例：林口倉目前有 500箱泡麵，自有車隊可送。烏日倉有 100台發電機，需車隊協助。", help="請盡量保持文意通順，包含地點、品項與數量。")
+        # 💡 加入 key
+        bulk_text = st.text_area("📄 貼上庫存盤點清單", height=150, placeholder="範例：林口倉目前有 500箱泡麵，自有車隊可送。烏日倉有 100台發電機，需車隊協助。", help="請盡量保持文意通順，包含地點、品項與數量。", key="bulk_import_text")
         
-        if st.button("🧠 啟動 AI 批次解析", type="primary"):
+        # 💡 加入 key 解決崩潰點
+        if st.button("🧠 啟動 AI 批次解析", type="primary", key="bulk_parse_btn"):
             if not bulk_text.strip(): 
                 st.error("❌ 啟動失敗：請貼上清單內容！")
             else:
@@ -1118,9 +1124,12 @@ def page_submit_supply():
         if st.session_state.preview_supplies:
             st.markdown("### 📝 請確認解析結果 (點擊表格可直接修改)")
             df_preview = pd.DataFrame(st.session_state.preview_supplies)
-            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True)
             
-            if st.button("✅ 確認無誤，正式批次入庫", type="primary"):
+            # 💡 加入 key 確保資料編輯器穩定
+            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True, key="bulk_data_editor")
+            
+            # 💡 加入 key
+            if st.button("✅ 確認無誤，正式批次入庫", type="primary", key="bulk_confirm_btn"):
                 for _, row in edited_df.iterrows():
                     supply = {
                         "id": make_id("S"), "time": now_str(), "source": "ERP批次匯入",
@@ -1138,59 +1147,6 @@ def page_submit_supply():
                     st.session_state.supplies.insert(0, supply)
                 st.session_state.preview_supplies = None
                 st.success(f"✅ 成功！已為您批次入庫 {len(edited_df)} 筆物資。")
-                time.sleep(1.5)
-                st.rerun()
-
-    with tab2:
-        st.info("企業用戶可直接將 ERP 報表或倉管盤點訊息貼上，AI 將自動拆解為多筆供給庫存。")
-        bulk_text = st.text_area("貼上庫存盤點清單", height=150, placeholder="例如：林口倉目前有 500箱泡麵，自有車隊可送。烏日倉有 100台發電機，需車隊協助。")
-        
-        if st.button("🧠 啟動 AI 批次解析", type="primary"):
-            if not bulk_text: 
-                st.error("請貼上清單！")
-            else:
-                with st.spinner("Llama-3 正在進行語意拆解與推算座標..."):
-                    prompt = f"""請從以下文字萃取出物資庫存。請嚴格以 JSON 陣列回傳，不要有 Markdown 標記或其他文字：
-                    [ {{"item": "品項", "qty": 數量, "location_current": "存放地", "has_logistics": "可自行運送 或 需車隊協助", "lat": 緯度浮點(若無法判斷填23.5), "lon": 經度浮點(若無法判斷填121.0)}} ]
-                    文字：{bulk_text}"""
-                    try:
-                        from openai import OpenAI
-                        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
-                        raw_output = res.choices[0].message.content
-                        start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
-                        if start_idx != -1 and end_idx != -1:
-                            st.session_state.preview_supplies = json.loads(raw_output[start_idx:end_idx+1])
-                            st.session_state.bulk_text_cache = bulk_text # 暫存供後續寫入
-                        else:
-                            st.error("AI 格式解析失敗，請確認文字內容。")
-                    except Exception as e:
-                        st.error(f"解析發生錯誤：{str(e)}")
-
-        # 💡 防盲盒機制：顯示預覽與編輯區
-        if st.session_state.preview_supplies:
-            st.markdown("### 📝 請確認解析結果 (點擊表格可直接修改)")
-            df_preview = pd.DataFrame(st.session_state.preview_supplies)
-            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True)
-            
-            if st.button("✅ 確認無誤，正式批次入庫", type="primary"):
-                for _, row in edited_df.iterrows():
-                    supply = {
-                        "id": make_id("S"), "time": now_str(), "source": "ERP批次匯入",
-                        "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
-                        "district": user.get("district", "全區"), "village": "全區",
-                        "location_current": row.get("location_current", user.get("district")), 
-                        "lat": float(row.get("lat", 23.5)), "lon": float(row.get("lon", 121.0)), 
-                        "resource_type": "有形資源", "category": "批次匯入", 
-                        "item": row.get("item"), "qty": int(row.get("qty", 1)),
-                        "has_logistics": row.get("has_logistics", "需車隊協助"),
-                        "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
-                        "verified_by": user.get("id") if user.get("verified") else "",
-                        "raw_text": st.session_state.get("bulk_text_cache", ""), "risk_flag": "",
-                    }
-                    st.session_state.supplies.insert(0, supply)
-                st.session_state.preview_supplies = None # 清空預覽
-                st.success(f"✅ 成功正式入庫 {len(edited_df)} 筆物資！")
                 time.sleep(1.5)
                 st.rerun()
 
