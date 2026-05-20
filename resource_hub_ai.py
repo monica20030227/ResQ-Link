@@ -56,6 +56,24 @@ SMART_MATCH_STATUS = {
 }
 
 # =========================================================
+# UI 輔助函數
+# =========================================================
+def get_status_badge(status):
+    """回傳帶有 CSS 樣式的狀態標籤 HTML"""
+    badges = {
+        "verified": "<span style='background-color:#d4edda; color:#155724; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>✅ 已認證</span>",
+        "pending": "<span style='background-color:#fff3cd; color:#856404; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>⏳ 待審核</span>",
+        "rejected": "<span style='background-color:#f8d7da; color:#721c24; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>❌ 已駁回</span>",
+        "已處理": "<span style='background-color:#cce5ff; color:#004085; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>🔄 處理中</span>",
+        "已出貨": "<span style='background-color:#cce5ff; color:#004085; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>🚚 配送中</span>",
+        "已完成(收妥)": "<span style='background-color:#d4edda; color:#155724; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>🎉 任務結案</span>",
+        "部分配對 (尚缺)": "<span style='background-color:#fff3cd; color:#856404; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>⚠️ 部分配對</span>",
+        "可調派": "<span style='background-color:#d4edda; color:#155724; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>🟢 可調派</span>",
+        "未處理": "<span style='background-color:#e2e3e5; color:#383d41; padding:3px 8px; border-radius:12px; font-size:12px; font-weight:bold;'>⚪ 未處理</span>"
+    }
+    return badges.get(status, f"<span style='background-color:#e2e3e5; color:#383d41; padding:3px 8px; border-radius:12px; font-size:12px;'>{status}</span>")
+    
+# =========================================================
 # 1. Session State 初始化
 # =========================================================
 def now_str(fmt="%Y-%m-%d %H:%M"):
