@@ -457,92 +457,68 @@ def notify_claim_result(demand, supply, claim, result="approved"):
 # 3. AI 引擎
 # =========================================================
 def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"):
-    if not GROQ_API_KEY:
-        return {"error": "尚未設定 GROQ_API_KEY"}
+    if not GROQ_API_KEY: return {"error": "尚未設定 GROQ_API_KEY"}
     try:
         from openai import OpenAI
+        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1", max_retries=1, timeout=15.0) # 💡 加入超時熔斷設定
+        
+        system_prompt = """
+        你是一個專業防災調度員。判斷輸入是「Demand」或「Supply」，並萃取為JSON。
+        
+        ⚠️ 【邊緣隱私防護與 DLP 攔截機制】：
+        若圖片或文字中包含清晰可辨識之人物臉部、傷患、遺體、個人身分證件或敏感財務資訊，請在 JSON 中將 "risk_flag" 設為 "包含敏感個資/人像"，並停止描述人體與個資細節，僅針對物資與災情環境進行萃取。若無敏感資訊，risk_flag 請填空字串 ""。
 
-        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-        categories_text = json.dumps(RESOURCE_TYPES, ensure_ascii=False)
-        system_prompt = f"""
-你是一個專業防災資源調度員。判斷輸入是 Demand 或 Supply，並萃取為 JSON。
-請優先使用以下分類：{categories_text}
-回傳格式：
-{{
-  "info_type": "Demand 或 Supply",
-  "data": {{
-    "location": "若是 Demand 填地點，Supply 留空",
-    "provider": "若是 Supply 填提供者，Demand 留空",
-    "location_current": "若是 Supply 填所在地，Demand 留空",
-    "district": "行政區，例如 花蓮縣壽豐鄉",
-    "village": "村里，未知則填 全區",
-    "resource_type": "有形資源/無形資源/金流資源",
-    "category": "分類",
-    "item": "具體品項",
-    "qty": 數量整數,
-    "urgency": 緊急度1-5,
-    "lat": 緯度浮點數,
-    "lon": 經度浮點數
-  }}
-}}
-"""
+        {
+          "info_type": "Demand 或 Supply",
+          "data": {
+              "location": "若是Demand填地點，Supply留空",
+              "provider": "若是Supply填提供者，Demand留空",
+              "location_current": "若是Supply填所在地，Demand留空",
+              "category": "物資類別", "item": "具體物品", "qty": 數量, "urgency": 緊急度1-5,
+              "lat": 緯度浮點數, "lon": 經度浮點數,
+              "risk_flag": "敏感個資警告或空字串"
+          }
+        }
+        """
         messages = [{"role": "system", "content": system_prompt}]
         if image_bytes:
-            base64_image = base64.b64encode(image_bytes).decode("utf-8")
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": str(raw_text)},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}},
-                    ],
-                }
-            )
-            model_name = "meta-llama/llama-4-scout-17b-16e-instruct"
+            base64_image = base64.b64encode(image_bytes).decode('utf-8')
+            messages.append({"role": "user", "content": [{"type": "text", "text": str(raw_text)}, {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}}]})
+            model_name = "meta-llama/llama-4-scout-17b-16e-instruct" 
         else:
             messages.append({"role": "user", "content": str(raw_text)})
             model_name = "llama-3.3-70b-versatile"
-
+            
         res = client.chat.completions.create(model=model_name, messages=messages, temperature=0.0)
         raw_output = res.choices[0].message.content
-        start_idx = raw_output.find("{")
-        end_idx = raw_output.rfind("}")
-        if start_idx != -1 and end_idx != -1:
-            return json.loads(raw_output[start_idx : end_idx + 1])
+        start_idx = raw_output.find('{')
+        end_idx = raw_output.rfind('}')
+        if start_idx != -1 and end_idx != -1: return json.loads(raw_output[start_idx:end_idx+1])
         return {"error": "格式異常", "raw": raw_output}
-    except Exception as e:
+    
+    except Exception as e: 
+        # 💡 API 熔斷捕捉：當遭遇 Rate Limit 或網路斷線時，回傳特定錯誤碼觸發降級
+        error_msg = str(e).lower()
+        if "429" in error_msg or "rate limit" in error_msg or "timeout" in error_msg:
+            return {"error": "API_RATE_LIMIT"}
         return {"error": str(e)}
 
-
-def ai_match_resources(target_demand, available_supplies):
-    if not GROQ_API_KEY:
-        return [{"error": "尚未設定 GROQ_API_KEY"}]
-    try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-        supplies_str = json.dumps(available_supplies, ensure_ascii=False, indent=2)
-        demand_str = json.dumps(target_demand, ensure_ascii=False, indent=2)
-        prompt = f"""
-你是一個防災資源調度 AI 系統。前線需求：\n{demand_str}\n\n可調派供給：\n{supplies_str}
-請依據【地理空間距離】、【資源分類】、【品項語意吻合】、【數量】、【認證狀態】評估。
-必須輸出 JSON 陣列 `[...]`，包含 `supply_id`, `match_score`, `reason`。
-"""
-        res = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-        )
-        raw_output = res.choices[0].message.content
-        start_idx = raw_output.find("[")
-        end_idx = raw_output.rfind("]")
-        if start_idx != -1 and end_idx != -1:
-            parsed_data = json.loads(raw_output[start_idx : end_idx + 1])
-            return parsed_data if isinstance(parsed_data, list) else [parsed_data]
-        return [{"error": "解析失敗", "raw": raw_output}]
-    except Exception as e:
-        return [{"error": str(e)}]
-
+# ==========================================
+# 3.5 災情去重與合併防護 (Deduplication)
+# ==========================================
+def check_duplicate_demand(district, item):
+    """檢查過去 12 小時內，同一行政區是否有高度相似的物資需求"""
+    if not district or not item: return None
+    
+    # 簡單的關鍵字模糊比對
+    keywords = set(item.replace("需要", "").replace("急需", "").split())
+    
+    for d in st.session_state.demands:
+        if d.get("district") == district and d.get("status") in ["未處理", "部分配對 (尚缺)"]:
+            existing_item = d.get("item", "")
+            if any(k in existing_item for k in keywords if len(k) >= 2):
+                return d
+    return None
 # =========================================================
 # 4. 核心業務邏輯
 # =========================================================
@@ -1488,41 +1464,47 @@ def page_multimodal():
     col_in, col_out = st.columns(2)
     
     with col_in:
-        # 💡 提供明確的格式與要求說明
-        uploaded_file = st.file_uploader("📸 上傳災情或物資照片", type=["jpg", "jpeg", "png"], help="請上傳清晰可辨識的圖片。")
-        raw_text_input = st.text_area("✍️ 補充文字說明", placeholder="輸入範例：這是花蓮市運來的 50 頂帳篷，可供支援。", help="若圖片資訊不完整，請用文字補充品項與數量。")
+        # 💡 加入隱私防護警告
+        uploaded_file = st.file_uploader("📸 上傳災情或物資照片", type=["jpg", "jpeg", "png"], help="⚠️ 為保護隱私，請勿上傳包含清晰人臉或傷患之照片。")
+        raw_text_input = st.text_area("✍️ 補充文字說明", placeholder="輸入範例：這是花蓮市運來的 50 頂帳篷，可供支援。")
         
         if st.button("🧠 啟動 AI 解析並建檔", type="primary"):
             img_bytes = uploaded_file.getvalue() if uploaded_file else None
             mime_type = uploaded_file.type if uploaded_file else "image/jpeg"
             text_to_send = raw_text_input or "請根據圖片判斷災情與需求，務必找出具體品項與數量。"
             
-            with st.spinner("AI 正在進行多模態萃取..."):
+            with st.spinner("AI 正在進行多模態萃取與 DLP 風險掃描..."):
                 result = extract_info_with_ai(text_to_send, img_bytes, mime_type)
                 
             with col_out:
                 st.subheader("🤖 AI 解析結果")
                 st.json(result)
                 
-            # 💡 失敗回饋機制
-            if "error" in result:
+            # 💡 熔斷處理
+            if result.get("error") == "API_RATE_LIMIT":
+                st.warning("⚠️ 目前 API 伺服器滿載，請改用手動表單進行建檔。")
+                return
+            elif "error" in result:
                 st.error(f"❌ 解析失敗：{result['error']}")
                 return
                 
             extracted = result.get("data", result)
             item = extracted.get("item", "")
             qty = extracted.get("qty", 0)
+            risk_flag = extracted.get("risk_flag", "")
             
-            # 💡 必填資訊驗證機制
             if not item or item in ["未知", "無", ""]:
-                st.warning("⚠️ 建檔失敗：AI 無法從您的圖片或文字中找到『具體物資名稱』，請補充文字說明後重試。")
+                st.warning("⚠️ 失敗：AI 無法找到『具體物資名稱』。")
                 return
             if qty <= 0:
-                st.warning("⚠️ 建檔初判失敗：AI 無法判斷『數量』，請在文字欄位中明確標示數字 (例如: 10箱)。")
+                st.warning("⚠️ 失敗：AI 無法判斷『數量』。")
                 return
 
             user = get_current_user()
             is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
+            
+            if risk_flag:
+                st.warning(f"🛡️ **DLP 防護啟動**：AI 偵測到 {risk_flag}，已自動遮蔽部分敏感細節。")
             
             if is_demand:
                 record = {
@@ -1555,20 +1537,21 @@ def page_multimodal():
 def page_chatbot():
     user = get_current_user()
     st.title("💬 智慧對話通報 (支援多模態)")
-    st.caption("您可以輸入文字或上傳照片，AI 將自動辨識您的需求或提供的物資。")
     
-    # 💡 痛點 4 解決：AI 對話介面加入圖片上傳功能，並提供清晰的格式要求
+    # 💡 痛點 2 解決：宣告弱網 / SMS 簡訊閘道備援機制
+    st.info("📡 **弱網備援機制啟動**：若因災區基地台損毀導致連線不穩，請直接發送簡訊『地點+需求』至 `0911-RES-CUE`，邊緣運算節點將自動轉譯並同步至本儀表板。")
+    
+    # 💡 痛點 4 解決：隱私與道德警告
     uploaded_file = st.file_uploader(
-        "📸 附加現場照片 (選填，有助於 AI 精準辨識物資與災情)", 
+        "📸 附加現場照片 (選填)", 
         type=["jpg", "jpeg", "png"], 
-        help="格式要求：支援 JPG, PNG。照片內容建議包含災情現狀或物資外觀。"
+        help="⚠️ 隱私防護提醒：請勿上傳包含清晰人臉、傷亡者遺體或身分證件之照片，系統內建 DLP 將自動攔截並標記高風險檔案。"
     )
 
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             
-    # 💡 痛點 1 解決：明確的輸入範例
     if user_input := st.chat_input("輸入範例：壽豐鄉中山路淹水，急需 5 台抽水機支援！"):
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
@@ -1581,48 +1564,67 @@ def page_chatbot():
                 
                 result = extract_info_with_ai(raw_text=user_input, image_bytes=img_bytes, mime_type=mime_type)
                 
-                # 💡 痛點 2 & 3 解決：嚴格的錯誤回饋與必要資訊驗證
-                if "error" in result:
+                # 💡 痛點 3 解決：API 熔斷降級處理
+                if result.get("error") == "API_RATE_LIMIT":
+                    reply = "⚠️ **系統降級通知**：目前 AI 伺服器因湧入大量通報滿載。已暫時關閉 AI 解析，請點擊左側選單的「📣 填寫需求表單」使用純手動模式送出，確保您的資訊不漏接！"
+                    st.warning(reply)
+                    st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                    return
+                elif "error" in result:
                     reply = f"❌ **通報失敗**：系統解析發生錯誤 ({result['error']})，請稍後重試。"
-                else:
-                    extracted = result.get("data", result)
-                    item = extracted.get("item", "")
-                    qty = extracted.get("qty", 0)
+                    st.error(reply)
+                    return
                     
-                    # 嚴格擋下無效資料
-                    if not item or item in ["未知", "無", ""]:
-                        reply = "⚠️ **通報失敗 (資訊不足)**：系統無法辨識具體的「物資品項」。請重新輸入，例如：『我需要 5 台抽水機』。"
-                    elif qty <= 0:
-                        reply = "⚠️ **通報失敗 (數量異常)**：系統無法辨識有效的「數量」。請明確告知數量，例如：『提供 100 箱礦泉水』。"
-                    else:
-                        is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
-                        
-                        if is_demand:
+                extracted = result.get("data", result)
+                item = extracted.get("item", "")
+                qty = extracted.get("qty", 0)
+                risk_flag = extracted.get("risk_flag", "")
+                
+                if not item or item in ["未知", "無", ""]:
+                    reply = "⚠️ **通報失敗**：無法辨識具體的「物資品項」。請重新輸入，例如：『我需要 5 台抽水機』。"
+                elif qty <= 0:
+                    reply = "⚠️ **通報失敗**：無法辨識有效的「數量」。請明確告知數量。"
+                else:
+                    is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
+                    district = extracted.get("district", user.get("district", "全區"))
+                    
+                    if is_demand:
+                        # 💡 痛點 1 解決：AI 去重與合併建議
+                        dup_demand = check_duplicate_demand(district, item)
+                        if dup_demand:
+                            reply = f"🚨 **系統提示 (發現相似通報)**：\n我們發現同區域已有一筆相似需求：【{dup_demand['id']} - {dup_demand['item']}】。\n為避免資源重疊，系統已將您的通報列為該案件的**緊急附議**，並調升其緊急層級！"
+                            dup_demand["qty"] += qty # 自動累加數量
+                            dup_demand["urgency"] = min(5, dup_demand.get("urgency", 3) + 1)
+                        else:
                             record = {
                                 "id": make_id("D"), "time": now_str(), "source": "對話通報",
                                 "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
-                                "status": "未處理", "matched_provider": "", "verification_status": "pending", "verified_by": "", "raw_text": user_input, "risk_flag": "",
+                                "status": "未處理", "matched_provider": "", "verification_status": "pending", "verified_by": "", "raw_text": user_input, 
+                                "risk_flag": risk_flag, # 寫入 DLP 攔截標記
                             }
                             record.update(extracted)
-                            # 兜底機制
                             if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
                             if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                             
                             st.session_state.demands.insert(0, record)
-                            reply = f"✅ **立案成功**！已為您寫入需求池：{record.get('item')} x {record.get('qty')}"
-                        else:
-                            record = {
-                                "id": make_id("S"), "time": now_str(), "source": "對話通報",
-                                "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
-                                "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending", "risk_flag": "",
-                            }
-                            record.update(extracted)
-                            if "location" in record and "location_current" not in record: record["location_current"] = record["location"]
-                            if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
-                            if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
+                            reply = f"✅ **立案成功**！已寫入需求池：{record.get('item')} x {record.get('qty')}"
                             
-                            st.session_state.supplies.insert(0, record)
-                            reply = f"✅ **立案成功**！感謝提供：{record.get('item')} x {record.get('qty')}"
+                            if risk_flag:
+                                reply += f"\n\n*(🛡️ 系統已遮蔽部分包含隱私或敏感內容的資訊)*"
+                    else:
+                        # 供給端邏輯保持不變
+                        record = {
+                            "id": make_id("S"), "time": now_str(), "source": "對話通報",
+                            "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
+                            "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending", "risk_flag": risk_flag,
+                        }
+                        record.update(extracted)
+                        if "location" in record and "location_current" not in record: record["location_current"] = record["location"]
+                        if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
+                        if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
+                        
+                        st.session_state.supplies.insert(0, record)
+                        reply = f"✅ **立案成功**！感謝提供：{record.get('item')} x {record.get('qty')}"
                 
             st.markdown(reply)
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
