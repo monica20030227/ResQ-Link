@@ -1237,31 +1237,88 @@ def page_gov_review():
     st.title("🏛️ 政府審核中心")
     st.caption("政府單位只能審核同一行政區或村里的民眾需求與認領申請。")
 
-    tab1, tab2 = st.tabs(["需求認證", "認領申請審核"])
+    tab1, tab2 = st.tabs(["🚨 需求批次認證", "📋 認領申請審核 (附戰情地圖)"])
 
+    # ==========================================
+    # 痛點 1 & 3 解決：緊急度降冪排序與批次審核 (Bulk Action)
+    # ==========================================
     with tab1:
+        st.subheader("🚨 轄區需求批次認證")
+        st.write("請在表格中直接勾選欲核准的項目，或填寫駁回理由，最後點擊下方按鈕批次送出。已依「緊急度」為您降冪排序。")
+        
         reviewable_demands = [d for d in st.session_state.demands if d.get("verification_status") == "pending" and can_gov_review(user, d)]
+        
         if not reviewable_demands:
-            st.info("目前沒有你可審核的需求。")
-        for d in reviewable_demands:
-            with st.container(border=True):
-                demand_card(d)
-                col_a, col_b = st.columns(2)
-                note = st.text_input("審核備註", key=f"gov_d_note_{d['id']}")
-                if col_a.button("✅ 認證通過", key=f"gov_approve_d_{d['id']}"):
-                    d["verification_status"] = "verified"
-                    d["verified_by"] = user.get("id")
-                    add_audit("政府認證需求", f"{d['id']} 通過 / {note}")
-                    add_notification(f"✅ 需求已由 {user.get('name')} 認證：{d.get('item')}", "review")
+            st.info("目前沒有可審核的需求。")
+        else:
+            # 💡 依照緊急度排序：最高危險的放在最上方
+            reviewable_demands = sorted(reviewable_demands, key=lambda x: x.get("urgency", 0), reverse=True)
+            
+            # 準備轉換為 Pandas DataFrame 的格式
+            df_data = []
+            for d in reviewable_demands:
+                df_data.append({
+                    "id": d["id"],
+                    "緊急度": "🔴" * d.get("urgency", 3),  # 💡 將數字轉為視覺化的警示燈號
+                    "地點": d.get("location", "未知"),
+                    "品項": f"{d.get('item')} x {d.get('qty')}",
+                    "通報人": d.get("requester_name", "未知"),
+                    "通報內容": d.get("raw_text", ""),
+                    "核准": False,
+                    "駁回": False,
+                    "審核備註": ""
+                })
+                
+            df = pd.DataFrame(df_data)
+            
+            # 💡 導入 st.data_editor 讓政府官員可以批次勾選
+            edited_df = st.data_editor(
+                df,
+                column_config={
+                    "核准": st.column_config.CheckboxColumn("✅ 批次核准", default=False),
+                    "駁回": st.column_config.CheckboxColumn("❌ 批次駁回", default=False),
+                    "審核備註": st.column_config.TextColumn("備註(若駁回強烈建議填寫)"),
+                },
+                disabled=["id", "緊急度", "地點", "品項", "通報人", "通報內容"], # 鎖定原始資料不可被修改
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            if st.button("🚀 送出批次審核", type="primary"):
+                processed_count = 0
+                for index, row in edited_df.iterrows():
+                    # 防呆機制：不能同時勾選核准與駁回
+                    if row["核准"] and row["駁回"]:
+                        st.warning(f"需求 {row['id']} 不能同時勾選核准與駁回，已略過該筆。")
+                        continue
+                        
+                    if row["核准"] or row["駁回"]:
+                        d_ref = next((x for x in st.session_state.demands if x["id"] == row["id"]), None)
+                        if d_ref:
+                            if row["核准"]:
+                                d_ref["verification_status"] = "verified"
+                                d_ref["verified_by"] = user.get("id")
+                                add_audit("政府批次認證需求", f"{d_ref['id']} 通過 / {row['審核備註']}")
+                                add_notification(f"✅ 需求已由 {user.get('name')} 認證：{d_ref.get('item')}", "review")
+                            elif row["駁回"]:
+                                d_ref["verification_status"] = "rejected"
+                                d_ref["status"] = "已駁回"
+                                d_ref["risk_flag"] = row["審核備註"] or "地方政府駁回"
+                                add_audit("政府批次駁回需求", f"{d_ref['id']} / {row['審核備註']}")
+                            processed_count += 1
+                            
+                if processed_count > 0:
+                    st.success(f"✅ 已成功批次處理 {processed_count} 筆需求！")
+                    time.sleep(1)
                     st.rerun()
-                if col_b.button("❌ 駁回需求", key=f"gov_reject_d_{d['id']}"):
-                    d["verification_status"] = "rejected"
-                    d["status"] = "已駁回"
-                    d["risk_flag"] = note or "地方政府駁回"
-                    add_audit("政府駁回需求", f"{d['id']} / {note}")
-                    st.rerun()
+                else:
+                    st.info("您尚未勾選處理任何項目。")
 
+    # ==========================================
+    # 痛點 2 & 4 解決：地圖空間預覽與 AI 決策透明化
+    # ==========================================
     with tab2:
+        st.subheader("📋 認領申請審核")
         reviewable_claims = []
         for c in st.session_state.claims:
             if c.get("status") != "pending_gov_review":
@@ -1272,35 +1329,79 @@ def page_gov_review():
 
         if not reviewable_claims:
             st.info("目前沒有你可審核的認領申請。")
+
+        # 💡 同樣依照需求緊急度排序
+        def get_claim_urgency(c_dict):
+            d_temp = next((x for x in st.session_state.demands if x["id"] == c_dict["demand_id"]), {})
+            return d_temp.get("urgency", 0)
+
+        reviewable_claims = sorted(reviewable_claims, key=get_claim_urgency, reverse=True)
+
         for c in reviewable_claims:
             d = next((x for x in st.session_state.demands if x["id"] == c["demand_id"]), None)
             s = next((x for x in st.session_state.supplies if x["id"] == c["supply_id"]), None)
             if not d or not s:
                 continue
+                
+            urgency_stars = "🔴" * d.get("urgency", 3)
+
             with st.container(border=True):
                 st.markdown(f"### 申請 {c['id']}｜{c['claimant_name']} 認領 {d.get('item')} x {c.get('claim_qty')}")
-                st.write(f"需求：{d.get('location')}｜{badge_text(d.get('verification_status'))}")
-                st.write(f"供給：{s.get('provider')} / {s.get('item')}｜庫存 {s.get('qty')}｜{badge_text(s.get('verification_status'))}")
-                st.progress(min(c.get("match_score", 0), 100) / 100, text=f"系統媒合分數：{c.get('match_score')}｜{c.get('match_reason')}")
-                note = st.text_input("審核備註", key=f"gov_c_note_{c['id']}")
-                col_a, col_b = st.columns(2)
-                if col_a.button("✅ 核准認領並完成配對", key=f"gov_approve_c_{c['id']}"):
-                    c["reviewer"] = user.get("name")
-                    c["review_note"] = note or "地方政府審核通過"
-                    ok = execute_dispatch(d["id"], s["id"], s.get("provider"), c.get("claim_qty"), claim_id=c["id"])
-                    if ok:
-                        st.success("已完成配對。")
+                st.markdown(f"**緊急度：** {urgency_stars}")
+                
+                # 💡 佈局拆分：左側文字審核區，右側地圖視覺區
+                col_info, col_map = st.columns([1, 1])
+                
+                with col_info:
+                    st.write(f"**🚨 需求方：** {d.get('location')}｜{badge_text(d.get('verification_status'))}")
+                    st.write(f"**📦 供給方：** {s.get('provider')} ({s.get('location_current')})｜庫存 {s.get('qty')}｜{badge_text(s.get('verification_status'))}")
+                    
+                    score = c.get("match_score", 0)
+                    if score >= 80:
+                        st.progress(score / 100, text=f"🟢 系統媒合分數：{score} (極度吻合)")
+                    elif score >= 50:
+                        st.progress(score / 100, text=f"🟡 系統媒合分數：{score} (尚可接受)")
                     else:
-                        st.error("配對失敗，可能是庫存或需求不足。")
-                    st.rerun()
-                if col_b.button("❌ 駁回認領", key=f"gov_reject_c_{c['id']}"):
-                    c["status"] = "rejected"
-                    c["reviewer"] = user.get("name")
-                    c["review_note"] = note or "地方政府駁回"
-                    c["review_time"] = now_str()
-                    notify_claim_result(d, s, c, result="rejected")
-                    add_audit("政府駁回認領", f"{c['id']} / {note}")
-                    st.rerun()
+                        st.progress(score / 100, text=f"🔴 系統媒合分數：{score} (風險較高)")
+                    
+                    # 💡 展開 AI 的推理邏輯，提供審核上下文
+                    with st.expander("🤖 點此查看 AI 決策詳解與風險提示"):
+                        st.info(c.get('match_reason', '無詳細理由'))
+                        
+                    note = st.text_input("審核備註", key=f"gov_c_note_{c['id']}")
+                    col_a, col_b = st.columns(2)
+                    
+                    if col_a.button("✅ 核准認領", key=f"gov_approve_c_{c['id']}", type="primary"):
+                        c["reviewer"] = user.get("name")
+                        c["review_note"] = note or "地方政府審核通過"
+                        ok = execute_dispatch(d["id"], s["id"], s.get("provider"), c.get("claim_qty"), claim_id=c["id"])
+                        if ok:
+                            st.success("已完成配對。")
+                            time.sleep(1)
+                        else:
+                            st.error("配對失敗，可能是庫存或需求不足。")
+                        st.rerun()
+                        
+                    if col_b.button("❌ 駁回認領", key=f"gov_reject_c_{c['id']}"):
+                        c["status"] = "rejected"
+                        c["reviewer"] = user.get("name")
+                        c["review_note"] = note or "地方政府駁回"
+                        c["review_time"] = now_str()
+                        notify_claim_result(d, s, c, result="rejected")
+                        add_audit("政府駁回認領", f"{c['id']} / {note}")
+                        st.rerun()
+                        
+                with col_map:
+                    # 💡 渲染路線預覽地圖，賦予官員空間概念
+                    map_data = []
+                    if d.get("lat") and d.get("lon"):
+                        map_data.append({"lat": float(d["lat"]), "lon": float(d["lon"]), "color": "#FF0000"}) # 需求紅點
+                    if s.get("lat") and s.get("lon"):
+                        map_data.append({"lat": float(s["lat"]), "lon": float(s["lon"]), "color": "#00FF00"}) # 供給綠點
+                        
+                    if map_data:
+                        st.caption("🗺️ 空間連線預覽 (紅點：災區 / 綠點：物資地)")
+                        st.map(pd.DataFrame(map_data), color="color", zoom=6, use_container_width=True)
 
 
 def page_map_pool():
