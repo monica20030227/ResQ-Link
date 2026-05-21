@@ -1106,13 +1106,14 @@ def page_submit_supply():
                 lon = geo_data.get("lon", 121.0)
                 district = geo_data.get("district")
                 
-                # 💡 降級備援：若 AI 無法識別特殊地名，才使用使用者本身的註冊行政區
                 if not district or district in ["未知", "無", ""]:
                     district = user.get("district", "全區")
 
             supply = {
                 "id": make_id("S"), "time": now_str(), "source": "平台表單",
-                "provider_id": user.get("id"), "provider": provider, "provider_email": user.get("email"),
+                "provider_id": user.get("id"), 
+                "provider": user.get("name") if user.get("role") == "company" else provider, # 💡 企業強制鎖定名稱
+                "provider_email": user.get("email"),
                 "district": district, "village": "全區",
                 "location_current": location_current, "lat": lat, "lon": lon,
                 "resource_type": resource_type, "category": category, "item": item, "qty": int(qty),
@@ -1121,7 +1122,7 @@ def page_submit_supply():
                 "verified_by": user.get("id") if user.get("verified") else "", "raw_text": raw_text, "risk_flag": geo_data.get("risk_flag", ""),
             }
             st.session_state.supplies.insert(0, supply)
-            st.success(f"✅ 成功！單筆供給已建立。物資來源地『{location_current}』已成功對應至【{district}】。")
+            st.success(f"✅ 成功！單筆供給已建立。提供單位：{supply['provider']} ｜ 物資來源地：{location_current} ({district})")
 
     with tab2:
         st.info("企業用戶可直接將 ERP 報表或倉管盤點訊息貼上，AI 將自動拆解為多筆供給庫存。")
@@ -1709,105 +1710,190 @@ def page_chatbot():
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
 def page_company_supply_chatbot():
-    """公司/團體專用：只能用對話方式新增供給，不允許提出需求。"""
+    """公司/團體專用：只能用對話方式或批次新增供給，不允許提出需求。"""
     user = get_current_user()
-    st.title("💬 AI 供給登錄")
-    st.caption("公司/團體專用。你可以像聊天一樣輸入可提供的物資或服務，系統會自動寫入供給池；此頁不開放提出需求。")
+    st.title("💬 企業 AI 供給登錄中心")
+    st.caption("透過對話或貼上 ERP 清單，AI 將自動為您建檔並定位物資來源。")
+    
+    tab1, tab2 = st.tabs(["🤖 智慧對話登錄", "📄 ERP 批次智能匯入"])
+    
+    with tab1:
+        st.info("💡 提示：請直接告訴 AI 您想提供的物資與存放地點。例如：『我們統一企業在林口物流中心有 500 箱礦泉水可提供，自有車隊可送。』")
+        
+        if "comp_supply_chat" not in st.session_state:
+            st.session_state.comp_supply_chat = []
+            
+        for msg in st.session_state.comp_supply_chat:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                
+        if user_input := st.chat_input("輸入範例：台南永康倉庫可提供 500 箱礦泉水，自有物流可配送"):
+            st.session_state.comp_supply_chat.append({"role": "user", "content": user_input})
+            with st.chat_message("user"):
+                st.markdown(user_input)
+                
+            with st.chat_message("assistant"):
+                demand_keywords = ["需要", "急需", "需求", "求助", "缺", "救援", "幫我找"]
+                supply_keywords = ["提供", "可提供", "捐贈", "供給", "支援", "可支援", "可調派", "庫存", "倉庫", "倉"]
 
-    st.info("""
-輸入範例：
-- 台南永康倉庫可提供 500 箱礦泉水，自有物流可配送
-- 公司目前可捐贈 100 箱泡麵，存放在台中烏日倉，需平台協助媒合車隊
-- 我們有 20 位志工可支援物資搬運，地點在花蓮市區
-- 高雄倉有 30 台發電機可調派，最快今晚出車
+                if any(k in user_input for k in demand_keywords) and not any(k in user_input for k in supply_keywords):
+                    reply = "⚠️ 公司/團體帳號在此頁只能新增『供給』，不能提出需求。若要協助災區，請直接輸入可提供的物資、數量與存放地。"
+                    st.warning(reply)
+                    st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
+                    # 避免提早 return，改用 else 或中斷後續執行
+                else:
+                    with st.spinner("🧠 AI 正在解析物資與倉儲地標..."):
+                        # 明確引導 AI 以 Supply 解析
+                        result = extract_info_with_ai(raw_text=f"這是一筆企業/團體供給資訊，請以 Supply 解析，並找出物資存放的實際地標：{user_input}")
+                        
+                        if result.get("error") == "API_RATE_LIMIT":
+                            reply = "⚠️ 目前 AI 伺服器滿載，請改用「📄 ERP 批次智能匯入」或稍後重試。"
+                            st.warning(reply)
+                        elif "error" in result:
+                            reply = f"❌ 解析發生錯誤 ({result['error']})。"
+                            st.error(reply)
+                        else:
+                            extracted = result.get("data", result)
+                            item = extracted.get("item", "")
+                            # 使用安全的取得與轉換數量
+                            try:
+                                qty = int(extracted.get("qty", 0))
+                            except ValueError:
+                                qty = 0
 
-提醒：公司/團體帳號在此只能建立「供給」，若要協助需求，請到「供給與認領中心」認領公開需求。
-""")
+                            if not item or item in ["未知", "無", ""]:
+                                reply = "⚠️ 無法辨識具體的「物資品項」，請重新輸入。例如：『可提供 500 箱礦泉水』"
+                            elif qty <= 0:
+                                reply = "⚠️ 無法辨識有效的「數量」，請明確告知數量。例如：『提供 100 箱』"
+                            else:
+                                # 確保資源類別正確
+                                resource_type = extracted.get("resource_type", "有形資源")
+                                if resource_type not in ["有形資源", "無形資源", "金流資源"]:
+                                    resource_type = "有形資源"
+                                category = extracted.get("category", "未分類")
+                                
+                                # 確保經緯度有預設值
+                                try: lat = float(extracted.get("lat", 23.5))
+                                except: lat = 23.5
+                                try: lon = float(extracted.get("lon", 121.0))
+                                except: lon = 121.0
+                                
+                                # 行政區備援
+                                district = extracted.get("district")
+                                if not district or district in ["未知", "無", ""]:
+                                    district = user.get("district", "全區")
+                                
+                                # 決定目前的實際存放位置 (地標)
+                                location_current = extracted.get("location_current") or extracted.get("location")
+                                if not location_current or location_current in ["未知", "無", ""]:
+                                    location_current = district
+                                    
+                                record = {
+                                    "id": make_id("S"), 
+                                    "time": now_str(), 
+                                    "source": "企業AI供給登錄",
+                                    "provider_id": user.get("id"), 
+                                    # 💡 核心修正：強制鎖定為企業註冊名稱，不被 AI 誤判的地點覆蓋
+                                    "provider": user.get("name"), 
+                                    "provider_email": user.get("email"),
+                                    "resource_type": resource_type, 
+                                    "category": category,
+                                    "district": district, 
+                                    "village": "全區",
+                                    "location_current": location_current,
+                                    "lat": lat, 
+                                    "lon": lon, 
+                                    "item": item,
+                                    "qty": qty,
+                                    "has_logistics": extracted.get("has_logistics", "未註明"),
+                                    "status": "可調派", 
+                                    "verification_status": "verified" if user.get("verified") else "pending", 
+                                    "verified_by": user.get("id") if user.get("verified") else "",
+                                    "raw_text": user_input,
+                                    "risk_flag": extracted.get("risk_flag", ""),
+                                }
+                                
+                                st.session_state.supplies.insert(0, record)
+                                # 統一的紀錄與通知 (如果你有實作這些功能)
+                                try: add_audit("公司AI新增供給", f"{record['id']} / {item} x {qty}")
+                                except: pass
+                                try: add_notification(f"🏢 企業新增供給：{item} x {qty}", "supply")
+                                except: pass
+                                
+                                reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(提供單位：{record['provider']} ｜ 倉儲地點：{record['location_current']} ｜ AI 定位：{district})*"
+                                if record.get("risk_flag"):
+                                    reply += f"\n\n*(🛡️ 系統已啟動 DLP 遮蔽敏感內容)*"
+                                
+                    if "reply" in locals():
+                        st.markdown(reply)
+                        st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
 
-    if "company_supply_chat" not in st.session_state:
-        st.session_state.company_supply_chat = [
-            {
-                "role": "assistant",
-                "content": "您好！請直接描述貴單位可提供的物資、人力或服務，例如：『台南永康倉庫可提供 500 箱礦泉水，自有物流可配送』。"
-            }
-        ]
-
-    for msg in st.session_state.company_supply_chat:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    if user_input := st.chat_input("輸入範例：台南永康倉庫可提供 500 箱礦泉水，自有物流可配送"):
-        st.session_state.company_supply_chat.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
-        with st.chat_message("assistant"):
-            demand_keywords = ["需要", "急需", "需求", "求助", "缺", "救援", "幫我找"]
-            supply_keywords = ["提供", "可提供", "捐贈", "供給", "支援", "可支援", "可調派", "庫存", "倉庫", "倉"]
-
-            if any(k in user_input for k in demand_keywords) and not any(k in user_input for k in supply_keywords):
-                reply = "⚠️ 公司/團體帳號在此頁只能新增『供給』，不能提出需求。若要協助災區，請輸入可提供的物資、數量與所在地。"
-                st.warning(reply)
-                st.session_state.company_supply_chat.append({"role": "assistant", "content": reply})
-                return
-
-            with st.spinner("AI 正在解析供給內容..."):
-                # 明確引導 AI 以 Supply 解析，避免公司輸入被誤判為 Demand。
-                result = extract_info_with_ai(raw_text=f"這是一筆公司/團體供給資訊，請以 Supply 解析：{user_input}")
-
-            if result.get("error") == "API_RATE_LIMIT":
-                reply = "⚠️ AI 目前忙碌，請改用『供給與認領中心 → 建立供給』手動建立。"
-                st.warning(reply)
-                st.session_state.company_supply_chat.append({"role": "assistant", "content": reply})
-                return
-            elif "error" in result:
-                reply = f"❌ 供給解析失敗：{result.get('error')}"
-                st.error(reply)
-                st.session_state.company_supply_chat.append({"role": "assistant", "content": reply})
-                return
-
-            extracted = result.get("data", result)
-            item = extracted.get("item", "")
-            qty = normalize_qty(extracted.get("qty", 0), default=0)
-            risk_flag = extracted.get("risk_flag", "")
-
-            if not item or item in ["未知", "無", ""]:
-                reply = "⚠️ 無法辨識具體供給品項。請重新輸入，例如：『可提供 500 箱礦泉水，存放於台南永康倉』。"
-            elif qty <= 0:
-                reply = "⚠️ 無法辨識有效數量。請明確告知數量，例如：500 箱、30 台、20 位志工。"
+    with tab2:
+        st.write("將庫存盤點清單貼於下方，AI 將自動拆解並預估座標。")
+        bulk_text = st.text_area("📄 貼上庫存盤點清單", height=150, placeholder="範例：林口倉目前有 500箱泡麵，自有車隊可送。烏日倉有 100台發電機，需車隊協助。", key="comp_bulk_text")
+        
+        if st.button("🧠 啟動批次解析", type="primary", key="comp_bulk_btn"):
+            if not bulk_text.strip(): 
+                st.error("請貼上清單內容！")
             else:
-                record = {
-                    "id": make_id("S"),
-                    "time": now_str(),
-                    "source": "公司AI供給登錄",
-                    "provider_id": user.get("id"),
-                    "provider": extracted.get("provider") or user.get("name"),
-                    "provider_email": user.get("email"),
-                    "district": extracted.get("district", user.get("district", "全區")),
-                    "village": extracted.get("village", user.get("village", "全區")),
-                    "location_current": extracted.get("location_current") or extracted.get("location") or user.get("district"),
-                    "lat": extracted.get("lat", 23.8),
-                    "lon": extracted.get("lon", 121.0),
-                    "resource_type": extracted.get("resource_type", "有形資源"),
-                    "category": extracted.get("category", "其他"),
-                    "item": item,
-                    "qty": qty,
-                    "has_logistics": extracted.get("has_logistics", "未註明"),
-                    "status": "可調派",
-                    "verification_status": "verified" if user.get("verified") else "pending",
-                    "verified_by": user.get("id") if user.get("verified") else "",
-                    "raw_text": user_input,
-                    "risk_flag": risk_flag,
-                }
-                st.session_state.supplies.insert(0, record)
-                add_audit("公司AI新增供給", f"{record['id']} / {item} x {qty}")
-                add_notification(f"🏢 公司新增供給：{item} x {qty}", "supply")
-                reply = f"✅ 已成功建立供給：**{item} x {qty}**，編號 `{record['id']}`。你可以到『供給與認領中心 → 我提供的供給』查看。"
-                if risk_flag:
-                    reply += "\n\n🛡️ 系統已標記此筆資料含敏感資訊，建議後續人工確認。"
+                with st.spinner("AI 正在處理批次資料..."):
+                    prompt = f"""請從以下文字萃取出物資庫存。請嚴格以 JSON 陣列回傳，不要有 Markdown 標記：
+                    [ {{"item": "品項", "qty": 數量, "location_current": "存放地", "has_logistics": "可自行運送 或 需車隊協助", "lat": 緯度浮點, "lon": 經度浮點, "district": "台灣行政區(如:新北市林口區)", "resource_type": "有形資源"}} ]
+                    文字：{bulk_text}"""
+                    try:
+                        from openai import OpenAI
+                        # 確保引入環境變數，或從頂端引入
+                        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        raw_output = res.choices[0].message.content
+                        start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
+                        if start_idx != -1 and end_idx != -1:
+                            st.session_state.preview_supplies = json.loads(raw_output[start_idx:end_idx+1])
+                            st.session_state.bulk_text_cache = bulk_text
+                            st.success("✅ 解析成功！請在下方確認。")
+                        else:
+                            st.error("❌ 解析失敗，請確認內容格式。")
+                    except Exception as e:
+                        st.error(f"系統錯誤：{str(e)}")
 
-            st.markdown(reply)
-            st.session_state.company_supply_chat.append({"role": "assistant", "content": reply})
+        if st.session_state.get("preview_supplies"):
+            st.markdown("### 📝 確認解析結果")
+            df_preview = pd.DataFrame(st.session_state.preview_supplies)
+            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True, key="comp_bulk_editor")
+            
+            if st.button("✅ 確認無誤，正式入庫", type="primary", key="comp_bulk_confirm"):
+                for _, row in edited_df.iterrows():
+                    
+                    # 取出欄位，做安全防護
+                    try: row_lat = float(row.get("lat", 23.5))
+                    except: row_lat = 23.5
+                    try: row_lon = float(row.get("lon", 121.0))
+                    except: row_lon = 121.0
+                    try: row_qty = int(row.get("qty", 1))
+                    except: row_qty = 1
+
+                    supply = {
+                        "id": make_id("S"), "time": now_str(), "source": "ERP批次匯入",
+                        "provider_id": user.get("id"), 
+                        # 💡 核心修正：強制鎖定為企業註冊名稱
+                        "provider": user.get("name"), 
+                        "provider_email": user.get("email"),
+                        "district": row.get("district", user.get("district")), "village": "全區",
+                        "location_current": row.get("location_current", user.get("district")), 
+                        "lat": row_lat, "lon": row_lon, 
+                        "resource_type": row.get("resource_type", "有形資源"), "category": "批次匯入", 
+                        "item": row.get("item"), "qty": row_qty,
+                        "has_logistics": row.get("has_logistics", "需車隊協助"),
+                        "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                        "verified_by": user.get("id") if user.get("verified") else "",
+                        "raw_text": st.session_state.get("bulk_text_cache", ""), "risk_flag": "",
+                    }
+                    st.session_state.supplies.insert(0, supply)
+                
+                st.session_state.preview_supplies = None
+                st.success(f"✅ 成功入庫 {len(edited_df)} 筆物資！")
+                time.sleep(1.5)
+                st.rerun()
 
 
 def page_company_supply_claim_center():
