@@ -1,4 +1,4 @@
-# 🧩 ResQ-Link：可信任災害資源智慧調度平台
+# ResQ-Link：可信任災害資源智慧調度平台
 > **ResQ-Link: Trusted AI-powered Disaster Resource Orchestration Platform**
 
 ## 📌 作品概念
