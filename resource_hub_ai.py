@@ -3189,6 +3189,13 @@ with st.sidebar:
 
     page = st.radio("功能選單", role_pages.get(role, ["📊 儀表板"]))
 
+    # 💡 補回登出按鈕：放置於側邊欄最下方，並撐滿寬度
+    st.divider()
+    if st.button("🚪 登出系統", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.current_user = None
+        st.rerun()
+
 
 # =========================================================
 # 路由綁定 (將功能名稱映射至對應函數)
