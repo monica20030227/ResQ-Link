@@ -1647,6 +1647,146 @@ def page_chatbot():
             st.markdown(reply)
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
 
+
+
+def page_company_supply_chatbot():
+    """公司/團體專用：只能用對話方式新增供給，不允許提出需求。"""
+    user = get_current_user()
+    st.title("💬 AI 供給登錄")
+    st.caption("公司/團體專用。你可以像聊天一樣輸入可提供的物資或服務，系統會自動寫入供給池；此頁不開放提出需求。")
+
+    st.info("""
+輸入範例：
+- 台南永康倉庫可提供 500 箱礦泉水，自有物流可配送
+- 公司目前可捐贈 100 箱泡麵，存放在台中烏日倉，需平台協助媒合車隊
+- 我們有 20 位志工可支援物資搬運，地點在花蓮市區
+- 高雄倉有 30 台發電機可調派，最快今晚出車
+
+提醒：公司/團體帳號在此只能建立「供給」，若要協助需求，請到「供給與認領中心」認領公開需求。
+""")
+
+    if "company_supply_chat" not in st.session_state:
+        st.session_state.company_supply_chat = [
+            {
+                "role": "assistant",
+                "content": "您好！請直接描述貴單位可提供的物資、人力或服務，例如：『台南永康倉庫可提供 500 箱礦泉水，自有物流可配送』。"
+            }
+        ]
+
+    for msg in st.session_state.company_supply_chat:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if user_input := st.chat_input("輸入範例：台南永康倉庫可提供 500 箱礦泉水，自有物流可配送"):
+        st.session_state.company_supply_chat.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        with st.chat_message("assistant"):
+            demand_keywords = ["需要", "急需", "需求", "求助", "缺", "救援", "幫我找"]
+            supply_keywords = ["提供", "可提供", "捐贈", "供給", "支援", "可支援", "可調派", "庫存", "倉庫", "倉"]
+
+            if any(k in user_input for k in demand_keywords) and not any(k in user_input for k in supply_keywords):
+                reply = "⚠️ 公司/團體帳號在此頁只能新增『供給』，不能提出需求。若要協助災區，請輸入可提供的物資、數量與所在地。"
+                st.warning(reply)
+                st.session_state.company_supply_chat.append({"role": "assistant", "content": reply})
+                return
+
+            with st.spinner("AI 正在解析供給內容..."):
+                # 明確引導 AI 以 Supply 解析，避免公司輸入被誤判為 Demand。
+                result = extract_info_with_ai(raw_text=f"這是一筆公司/團體供給資訊，請以 Supply 解析：{user_input}")
+
+            if result.get("error") == "API_RATE_LIMIT":
+                reply = "⚠️ AI 目前忙碌，請改用『供給與認領中心 → 建立供給』手動建立。"
+                st.warning(reply)
+                st.session_state.company_supply_chat.append({"role": "assistant", "content": reply})
+                return
+            elif "error" in result:
+                reply = f"❌ 供給解析失敗：{result.get('error')}"
+                st.error(reply)
+                st.session_state.company_supply_chat.append({"role": "assistant", "content": reply})
+                return
+
+            extracted = result.get("data", result)
+            item = extracted.get("item", "")
+            qty = normalize_qty(extracted.get("qty", 0), default=0)
+            risk_flag = extracted.get("risk_flag", "")
+
+            if not item or item in ["未知", "無", ""]:
+                reply = "⚠️ 無法辨識具體供給品項。請重新輸入，例如：『可提供 500 箱礦泉水，存放於台南永康倉』。"
+            elif qty <= 0:
+                reply = "⚠️ 無法辨識有效數量。請明確告知數量，例如：500 箱、30 台、20 位志工。"
+            else:
+                record = {
+                    "id": make_id("S"),
+                    "time": now_str(),
+                    "source": "公司AI供給登錄",
+                    "provider_id": user.get("id"),
+                    "provider": extracted.get("provider") or user.get("name"),
+                    "provider_email": user.get("email"),
+                    "district": extracted.get("district", user.get("district", "全區")),
+                    "village": extracted.get("village", user.get("village", "全區")),
+                    "location_current": extracted.get("location_current") or extracted.get("location") or user.get("district"),
+                    "lat": extracted.get("lat", 23.8),
+                    "lon": extracted.get("lon", 121.0),
+                    "resource_type": extracted.get("resource_type", "有形資源"),
+                    "category": extracted.get("category", "其他"),
+                    "item": item,
+                    "qty": qty,
+                    "has_logistics": extracted.get("has_logistics", "未註明"),
+                    "status": "可調派",
+                    "verification_status": "verified" if user.get("verified") else "pending",
+                    "verified_by": user.get("id") if user.get("verified") else "",
+                    "raw_text": user_input,
+                    "risk_flag": risk_flag,
+                }
+                st.session_state.supplies.insert(0, record)
+                add_audit("公司AI新增供給", f"{record['id']} / {item} x {qty}")
+                add_notification(f"🏢 公司新增供給：{item} x {qty}", "supply")
+                reply = f"✅ 已成功建立供給：**{item} x {qty}**，編號 `{record['id']}`。你可以到『供給與認領中心 → 我提供的供給』查看。"
+                if risk_flag:
+                    reply += "\n\n🛡️ 系統已標記此筆資料含敏感資訊，建議後續人工確認。"
+
+            st.markdown(reply)
+            st.session_state.company_supply_chat.append({"role": "assistant", "content": reply})
+
+
+def page_company_supply_claim_center():
+    st.title("📦 供給與認領中心")
+    st.caption("整合公司/團體最常用的供給建立、供給管理、需求認領與申請追蹤。")
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "AI 供給登錄",
+        "建立供給",
+        "我提供的供給",
+        "我要認領需求",
+        "我的認領申請",
+    ])
+    with tab1:
+        page_company_supply_chatbot()
+    with tab2:
+        page_submit_supply()
+    with tab3:
+        page_my_supplies()
+    with tab4:
+        page_public_claims()
+    with tab5:
+        page_my_claims()
+
+
+def page_company_logistics_esg_center():
+    st.title("🚚 配對物流與 ESG")
+    st.caption("整合已配對訂單、物流狀態、企業 ESG 影響力與通知紀錄。")
+    tab1, tab2, tab3 = st.tabs(["已配對訂單", "企業 ESG 影響力", "通知紀錄"])
+    with tab1:
+        page_matched_orders()
+    with tab2:
+        page_esg_dashboard()
+    with tab3:
+        if st.session_state.notifications:
+            st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
+        else:
+            st.info("目前沒有通知紀錄。")
+
 def page_smart_match_review():
     user = get_current_user()
     if user.get("role") != "admin":
@@ -2553,8 +2693,12 @@ role_pages = {
         "💬 智慧對話通報", "🗺️ 災情與資源地圖", "🤝 協助與認領", "📌 我的紀錄", "👤 個人設定與表單"
     ],
     "company": [
-        "📊 儀表板", "📦 建立供給(含批次)", "📦 我提供的供給", "🤝 我要認領需求", 
-        "📋 我的認領申請", "🚚 已配對訂單", "📈 企業 ESG 影響力", "🔔 通知紀錄", "🗺️ 公開資源池", "📥 AI轉譯"
+        "📊 公司總覽",
+        "💬 AI供給登錄",
+        "📦 供給與認領中心",
+        "🚚 配對物流與 ESG",
+        "🗺️ 公開資源池",
+        "👤 個人設定",
     ],
     # 💡 政府介面大瘦身：留下最精華的決策與協作功能
     "government": [
@@ -2581,7 +2725,7 @@ elif page == "🤖 AI 指揮官助理":    # 💡 綁定政府新 AI 助理
     page_gov_chatbot()
 elif page == "📥 戰情收件匣":       # 💡 綁定政府新首頁
     page_gov_inbox()
-elif page in ["🏠 首頁", "📊 儀表板"]:
+elif page in ["🏠 首頁", "📊 儀表板", "📊 公司總覽"]:
     page_role_dashboard()
 elif page in ["🗺️ 資源池", "🗺️ 公開資源池", "🗺️ 災情與資源地圖"]:
     page_map_pool()
@@ -2610,6 +2754,15 @@ elif page == "👤 個人設定與表單":
         tabs = st.tabs(["個人資料", "通知紀錄"])
         with tabs[0]: page_profile()
         with tabs[1]: st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
+
+elif page == "💬 AI供給登錄":
+    page_company_supply_chatbot()
+elif page == "📦 供給與認領中心":
+    page_company_supply_claim_center()
+elif page == "🚚 配對物流與 ESG":
+    page_company_logistics_esg_center()
+elif page == "👤 個人設定":
+    page_profile()
 
 # 以下保留給企業與管理員的專屬功能
 elif page in ["📦 建立供給(含批次)", "📦 建立供給"]:
