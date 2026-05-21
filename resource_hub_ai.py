@@ -1438,41 +1438,151 @@ def page_gov_review():
 
 
 def page_map_pool():
-    st.title("🗺️ 戰備資源池")
+    st.title("🗺️ 災情與全局資源戰情地圖")
+    st.caption("同步整合現場純災情、前線物資需求與後勤庫存供給，提供指揮官全局空間調配視野。")
+
+    # 💡 UI 優化：建立多圖層動態篩選網格
+    st.markdown("### 🛠️ 地圖戰情圖層控制")
+    col1, col2, col3 = st.columns(3)
+    with col1: view_disaster = st.checkbox("🚨 顯示現場純災情通報 (🟠 橘色標記)", value=True, key="map_view_disaster")
+    with col2: view_demand = st.checkbox("🔴 顯示前線物資需求池 (🔴 紅色標記)", value=True, key="map_view_demand")
+    with col3: view_supply = st.checkbox("🟢 顯示後勤可用供給庫存 (🟢 綠色標記)", value=True, key="map_view_supply")
+
     map_data = []
-    for d in st.session_state.demands:
-        if d.get("lat") and d.get("lon") and d.get("status") not in ["已駁回"]:
-            map_data.append({"lat": d["lat"], "lon": d["lon"], "color": "#FF0000"})
-    for s in st.session_state.supplies:
-        if s.get("lat") and s.get("lon") and s.get("qty", 0) > 0:
-            map_data.append({"lat": s["lat"], "lon": s["lon"], "color": "#00AA00"})
+
+    # ==========================================
+    # 1. 匯入純災情資料池 (獨立資料來源)
+    # ==========================================
+    if view_disaster and "disasters" in st.session_state:
+        for d in st.session_state.disasters:
+            try:
+                map_data.append({
+                    "latitude": float(d.get("lat", 23.5)),
+                    "longitude": float(d.get("lon", 121.0)),
+                    "名稱": d.get("description", "純災情通報"),
+                    "類型": "🚨 現場純災情",
+                    "color": "#FF8C00"  # 🟠 橘色代表現場災情現況
+                })
+            except:
+                pass
+
+    # ==========================================
+    # 2. 匯入前線物資需求資料池
+    # ==========================================
+    if view_demand and "demands" in st.session_state:
+        for d in st.session_state.demands:
+            if d.get("verification_status") == "verified" and d.get("status") in ["未處理", "部分配對 (尚缺)"]:
+                try:
+                    map_data.append({
+                        "latitude": float(d.get("lat", 23.5)),
+                        "longitude": float(d.get("lon", 121.0)),
+                        "名稱": f"{d.get('item')} (缺 {d.get('qty')})",
+                        "類型": "🔴 物資需求",
+                        "color": "#FF0000"  # 🔴 紅色代表亟需資源
+                    })
+                except:
+                    pass
+
+    # ==========================================
+    # 3. 匯入後勤物資供給資料池
+    # ==========================================
+    if view_supply and "supplies" in st.session_state:
+        for s in st.session_state.supplies:
+            if s.get("verification_status") == "verified" and s.get("status") == "可調派":
+                try:
+                    map_data.append({
+                        "latitude": float(s.get("lat", 23.5)),
+                        "longitude": float(s.get("lon", 121.0)),
+                        "名稱": f"{s.get('item')} (存 {s.get('qty')})",
+                        "類型": "🟢 可調派供給",
+                        "color": "#008000"  # 🟢 綠色代表民間與企業後援
+                    })
+                except:
+                    pass
+
+    # ==========================================
+    # 渲染全局 3D 空間地理地圖
+    # ==========================================
     if map_data:
-        st.markdown("🔴 需求點 ｜ 🟢 供給點")
-        st.map(pd.DataFrame(map_data), color="color", zoom=6, use_container_width=True)
+        df_map = pd.DataFrame(map_data)
+        # 利用 Streamlit 原生 color 參數進行點位顏色分流
+        st.map(df_map, latitude="latitude", longitude="longitude", color="color", size=20)
+        st.caption("📌 **戰情空間圖例說明**： 🟠 橘色 = 現場現場純災情 ｜ 🔴 紅色 = 前線物資需求 ｜ 🟢 綠色 = 後勤可用供給")
+    else:
+        st.info("💡 目前所選圖層內無任何地理資訊可供渲染，請開啟上方圖層開關。")
 
     st.divider()
-    tab1, tab2, tab3, tab4 = st.tabs(["需求池", "供給池", "認領申請", "智慧配對建議"])
-    with tab1:
-        df = pd.DataFrame(st.session_state.demands)
-        cols = ["id", "district", "village", "item", "qty", "resource_type", "category", "verification_status", "status", "matched_provider"]
-        st.dataframe(df[[c for c in cols if c in df.columns]], hide_index=True, use_container_width=True)
-    with tab2:
-        df = pd.DataFrame(st.session_state.supplies)
-        cols = ["id", "provider", "district", "item", "qty", "resource_type", "category", "verification_status", "status"]
-        st.dataframe(df[[c for c in cols if c in df.columns]], hide_index=True, use_container_width=True)
-    with tab3:
-        df = pd.DataFrame(st.session_state.claims)
-        if df.empty:
-            st.info("目前尚無認領申請。")
+    
+    # ==========================================
+    # 下方數據明細中心：升級為獨立三大分類 Tabs 
+    # ==========================================
+    st.subheader("📋 空間數據明細中心")
+    tab_dis, tab_dem, tab_sup = st.tabs(["⚠️ 現場純災情通報", "🚨 急需援助的物資需求", "📦 目前可調派的供給物資"])
+    
+    # 1. 純災情明細分頁 (獨立呈現)
+    with tab_dis:
+        if "disasters" in st.session_state and st.session_state.disasters:
+            df_dis = pd.DataFrame(st.session_state.disasters)
+            # 欄位存在防呆機制
+            display_cols_dis = ["id", "time", "district", "location", "description", "status"]
+            for col in display_cols_dis:
+                if col not in df_dis.columns: df_dis[col] = "未提供"
+            st.dataframe(
+                df_dis[display_cols_dis],
+                column_config={
+                    "id": st.column_config.TextColumn("案件編號", width="small"),
+                    "time": "回報時間",
+                    "district": "行政區",
+                    "location": "詳細地點/地標",
+                    "description": "災情現場狀況描述",
+                    "status": "處理狀態"
+                },
+                hide_index=True, use_container_width=True
+            )
         else:
-            st.dataframe(df, hide_index=True, use_container_width=True)
-    with tab4:
-        df = pd.DataFrame(st.session_state.smart_matches)
-        if df.empty:
-            st.info("目前尚無智慧配對建議。")
-        else:
-            st.dataframe(df, hide_index=True, use_container_width=True)
+            st.info("目前尚無未處理的現場純災情通報。")
 
+    # 2. 物資需求明細分頁
+    with tab_dem:
+        display_demands = [d for d in st.session_state.demands if d.get("verification_status") == "verified" and d.get("status") in ["未處理", "部分配對 (尚缺)"]]
+        if display_demands:
+            df_demands = pd.DataFrame(display_demands)
+            display_cols_dem = ["id", "time", "district", "location", "item", "qty", "urgency", "status"]
+            for col in display_cols_dem:
+                if col not in df_demands.columns: df_demands[col] = "未提供"
+            st.dataframe(
+                df_demands[display_cols_dem],
+                column_config={
+                    "id": st.column_config.TextColumn("編號", width="small"),
+                    "time": "時間", "district": "行政區", "location": "詳細地點", "item": "品項",
+                    "qty": st.column_config.ProgressColumn("數量規模", format="%d", min_value=0, max_value=500),
+                    "urgency": st.column_config.NumberColumn("🚨 緊急度", format="%d ⭐"),
+                    "status": "處理狀態",
+                },
+                hide_index=True, use_container_width=True
+            )
+        else:
+            st.info("目前無公開待處理需求。")
+            
+    # 3. 可調派供給明細分頁
+    with tab_sup:
+        display_supplies = [s for s in st.session_state.supplies if s.get("verification_status") == "verified" and s.get("status") == "可調派"]
+        if display_supplies:
+            df_supplies = pd.DataFrame(display_supplies)
+            display_cols_sup = ["id", "time", "provider", "location_current", "item", "qty", "has_logistics"]
+            for col in display_cols_sup:
+                if col not in df_supplies.columns: df_supplies[col] = "未提供"
+            st.dataframe(
+                df_supplies[display_cols_sup],
+                column_config={
+                    "id": st.column_config.TextColumn("編號", width="small"),
+                    "time": "登錄時間", "provider": "提供者", "location_current": "物資所在地", "item": "品項",
+                    "qty": st.column_config.NumberColumn("庫存數量", format="%d"), "has_logistics": "物流配送能力",
+                },
+                hide_index=True, use_container_width=True
+            )
+        else:
+            st.info("目前無公開可調派供給。")
 
 def page_ai_match():
     st.title("🤖 AI 調配引擎")
