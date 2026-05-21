@@ -483,29 +483,36 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
         system_prompt = """
         你是一個專業防災調度員與台灣地理資訊專家。請判斷輸入是「Demand」或「Supply」，並將其精準萃取為 JSON 格式。
         
-        ⚠️【重要：台灣地標、學校與建築物逆向解算規則】：
-        當輸入文字或圖片中包含台灣的學校、特定地標、車站、體育館、政府機關或物流中心（例如：「國立台灣大學」、「壽豐國中」、「台北101」、「花蓮車站」、「林口中儲倉」）時，你必須：
-        1. 運用你的地理知識庫，精準推導出該地標所屬的完整台灣行政區（格式必須包含完整縣市與鄉鎮市區，例如：「臺北市大安區」、「花蓮縣壽豐鄉」、「新北市林口區」），並填入 JSON 的 "district" 欄位。切勿填寫"未知"或留空！
-        2. 精準估算該地標的真實經緯度，填入 "lat" 與 "lon" 浮點數欄位。嚴禁直接盲目填寫 center 點 23.5/121.0，必須盡量貼近該著名地標的實際地理坐標。
+        ⚠️【重要：資源分類規則】：
+        "resource_type" 必須嚴格填入以下三者之一：
+        - "有形資源"：食物、水、工具、機具、物資等實體物品。
+        - "無形資源"：人力、志工、醫療支援、技術、心理諮詢等。
+        - "金流資源"：現金捐款、採購金等。
 
-        ⚠️【邊緣隱私防護與 DLP 攔截機制】：
-        若圖片或文字中包含清晰可辨識之人物臉部、傷患、遺體、個人身分證件或敏感財務資訊，請在 JSON 中將 "risk_flag" 設為 "包含敏感個資/人像"，並停止描述人體與個資細節，僅針對物資與災情環境進行萃取。若無敏感資訊，risk_flag 請填空字串 ""。
+        ⚠️【重要：地理座標強制解算規則】：
+        無論使用者輸入的是「完整地址」、「學校」、「特定地標」、「交流道」甚至是「村里名稱」，你都必須：
+        1. 推導出該地所屬的完整台灣行政區，填入 "district" 欄位 (如：花蓮縣壽豐鄉)。
+        2. 運用地理知識，強制估算該地點的精準經緯度，並填入 "lat" 與 "lon" 浮點數欄位。嚴禁盲目填寫 23.5/121.0。
+
+        ⚠️【DLP 隱私防護】：
+        若包含清晰人臉、遺體、身分證件，請將 "risk_flag" 設為 "包含敏感個資/人像"，並忽略敏感細節。
 
         回傳格式請嚴格遵循以下 JSON 結構：
         {
           "info_type": "Demand 或 Supply",
           "data": {
-              "location": "輸入的地地點、學校或完整地址",
-              "provider": "若是Supply填提供者，Demand留空",
-              "location_current": "若是Supply填所在地點或地標，Demand留空",
-              "category": "物資類別", 
+              "resource_type": "有形資源 或 無形資源 或 金流資源",
+              "category": "次要物資類別",
               "item": "具體物品", 
               "qty": 數量, 
               "urgency": 緊急度1-5,
+              "location": "若是Demand填地點，Supply留空",
+              "provider": "若是Supply填提供者，Demand留空",
+              "location_current": "若是Supply填所在地，Demand留空",
               "lat": 緯度浮點數, 
               "lon": 經度浮點數,
-              "district": "推導出的完整台灣行政區(如：花蓮縣壽豐鄉)",
-              "risk_flag": "敏感個資警告或空字串"
+              "district": "完整台灣行政區",
+              "risk_flag": "敏感警告或空字串"
           }
         }
         """
@@ -530,6 +537,7 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
         if "429" in error_msg or "rate limit" in error_msg or "timeout" in error_msg:
             return {"error": "API_RATE_LIMIT"}
         return {"error": str(e)}
+        
 # ==========================================
 # 3.5 災情去重與合併防護 (Deduplication)
 # ==========================================
@@ -1511,7 +1519,6 @@ def page_multimodal():
     col_in, col_out = st.columns(2)
     
     with col_in:
-        # 💡 加入隱私防護警告
         uploaded_file = st.file_uploader("📸 上傳災情或物資照片", type=["jpg", "jpeg", "png"], help="⚠️ 為保護隱私，請勿上傳包含清晰人臉或傷患之照片。")
         raw_text_input = st.text_area("✍️ 補充文字說明", placeholder="輸入範例：這是花蓮市運來的 50 頂帳篷，可供支援。")
         
@@ -1527,7 +1534,6 @@ def page_multimodal():
                 st.subheader("🤖 AI 解析結果")
                 st.json(result)
                 
-            # 💡 熔斷處理
             if result.get("error") == "API_RATE_LIMIT":
                 st.warning("⚠️ 目前 API 伺服器滿載，請改用手動表單進行建檔。")
                 return
@@ -1540,6 +1546,16 @@ def page_multimodal():
             qty = extracted.get("qty", 0)
             risk_flag = extracted.get("risk_flag", "")
             
+            # 💡 確保讀取資源類別與座標
+            resource_type = extracted.get("resource_type", "有形資源")
+            if resource_type not in ["有形資源", "無形資源", "金流資源"]: resource_type = "有形資源"
+            category = extracted.get("category", "未分類")
+            
+            try: lat = float(extracted.get("lat", 23.5))
+            except: lat = 23.5
+            try: lon = float(extracted.get("lon", 121.0))
+            except: lon = 121.0
+            
             if not item or item in ["未知", "無", ""]:
                 st.warning("⚠️ 失敗：AI 無法找到『具體物資名稱』。")
                 return
@@ -1550,6 +1566,10 @@ def page_multimodal():
             user = get_current_user()
             is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
             
+            district = extracted.get("district")
+            if not district or district in ["未知", "無", ""]:
+                district = user.get("district", "全區")
+            
             if risk_flag:
                 st.warning(f"🛡️ **DLP 防護啟動**：AI 偵測到 {risk_flag}，已自動遮蔽部分敏感細節。")
             
@@ -1557,38 +1577,39 @@ def page_multimodal():
                 record = {
                     "id": make_id("D"), "time": now_str(), "source": "AI轉譯",
                     "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
+                    "resource_type": resource_type, "category": category, # 💡 寫入
+                    "lat": lat, "lon": lon, # 💡 寫入
                     "status": "未處理", "matched_provider": "", "verification_status": "verified" if user.get("role") == "government" and user.get("verified") else "pending",
                     "verified_by": user.get("id") if user.get("role") == "government" and user.get("verified") else "",
-                    "raw_text": text_to_send, "risk_flag": "",
+                    "raw_text": text_to_send, "risk_flag": risk_flag,
                 }
                 record.update(extracted)
-                if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
+                record["district"] = district
                 if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                 st.session_state.demands.insert(0, record)
-                st.success(f"✅ 成功！已寫入一筆需求：{item} x {qty}") # 明確成功回饋
+                st.success(f"✅ 成功！已寫入一筆需求：{item} x {qty} (AI定位: {district})")
             else:
                 record = {
                     "id": make_id("S"), "time": now_str(), "source": "AI轉譯",
                     "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
+                    "resource_type": resource_type, "category": category, # 💡 寫入
+                    "lat": lat, "lon": lon, # 💡 寫入
                     "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
-                    "verified_by": user.get("id") if user.get("verified") else "", "raw_text": text_to_send, "risk_flag": "",
+                    "verified_by": user.get("id") if user.get("verified") else "", "raw_text": text_to_send, "risk_flag": risk_flag,
                 }
                 record.update(extracted)
+                record["district"] = district
                 if "location" in record and "location_current" not in record: record["location_current"] = record["location"]
-                if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
                 if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                 st.session_state.supplies.insert(0, record)
-                st.success(f"✅ 成功！已寫入一筆供給：{item} x {qty}") # 明確成功回饋
+                st.success(f"✅ 成功！已寫入一筆供給：{item} x {qty} (AI定位: {district})")
 
 
 def page_chatbot():
     user = get_current_user()
     st.title("💬 智慧對話通報 (支援多模態)")
+    st.info("📡 **弱網備援機制啟動**：若因災區基地台損毀導致連線不穩，請直接發送簡訊『地點+需求』至 `0911-RES-CUE`。")
     
-    # 💡 痛點 2 解決：宣告弱網 / SMS 簡訊閘道備援機制
-    st.info("📡 **弱網備援機制啟動**：若因災區基地台損毀導致連線不穩，請直接發送簡訊『地點+需求』至 `0911-RES-CUE`，邊緣運算節點將自動轉譯並同步至本儀表板。")
-    
-    # 💡 痛點 4 解決：隱私與道德警告
     uploaded_file = st.file_uploader(
         "📸 附加現場照片 (選填)", 
         type=["jpg", "jpeg", "png"], 
@@ -1605,15 +1626,14 @@ def page_chatbot():
             st.markdown(user_input)
             
         with st.chat_message("assistant"):
-            with st.spinner("AI 正在解析通報內容..."):
+            with st.spinner("AI 正在解析通報內容與推算座標..."):
                 img_bytes = uploaded_file.getvalue() if uploaded_file else None
                 mime_type = uploaded_file.type if uploaded_file else "image/jpeg"
                 
                 result = extract_info_with_ai(raw_text=user_input, image_bytes=img_bytes, mime_type=mime_type)
                 
-                # 💡 痛點 3 解決：API 熔斷降級處理
                 if result.get("error") == "API_RATE_LIMIT":
-                    reply = "⚠️ **系統降級通知**：目前 AI 伺服器因湧入大量通報滿載。已暫時關閉 AI 解析，請點擊左側選單的「📣 填寫需求表單」使用純手動模式送出，確保您的資訊不漏接！"
+                    reply = "⚠️ **系統降級通知**：目前 AI 伺服器滿載。請點擊左側「📣 填寫需求表單」使用純手動模式送出！"
                     st.warning(reply)
                     st.session_state.chat_history.append({"role": "assistant", "content": reply})
                     return
@@ -1627,56 +1647,66 @@ def page_chatbot():
                 qty = extracted.get("qty", 0)
                 risk_flag = extracted.get("risk_flag", "")
                 
+                # 💡 確保讀取資源類別與座標 (並加入防呆預設值)
+                resource_type = extracted.get("resource_type", "有形資源")
+                if resource_type not in ["有形資源", "無形資源", "金流資源"]: resource_type = "有形資源"
+                category = extracted.get("category", "未分類")
+                
+                try: lat = float(extracted.get("lat", 23.5))
+                except: lat = 23.5
+                try: lon = float(extracted.get("lon", 121.0))
+                except: lon = 121.0
+                
                 if not item or item in ["未知", "無", ""]:
                     reply = "⚠️ **通報失敗**：無法辨識具體的「物資品項」。請重新輸入，例如：『我需要 5 台抽水機』。"
                 elif qty <= 0:
                     reply = "⚠️ **通報失敗**：無法辨識有效的「數量」。請明確告知數量。"
                 else:
                     is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
-                    district = extracted.get("district", user.get("district", "全區"))
+                    district = extracted.get("district")
+                    if not district or district in ["未知", "無", ""]:
+                        district = user.get("district", "全區")
                     
                     if is_demand:
-                        # 💡 痛點 1 解決：AI 去重與合併建議
                         dup_demand = check_duplicate_demand(district, item)
                         if dup_demand:
-                            reply = f"🚨 **系統提示 (發現相似通報)**：\n我們發現同區域已有一筆相似需求：【{dup_demand['id']} - {dup_demand['item']}】。\n為避免資源重疊，系統已將您的通報列為該案件的**緊急附議**，並調升其緊急層級！"
-                            dup_demand["qty"] += qty # 自動累加數量
+                            reply = f"🚨 **系統提示 (發現相似通報)**：\n發現同區域已有一筆相似需求：【{dup_demand['id']} - {dup_demand['item']}】。系統已將您的通報列為緊急附議！"
+                            dup_demand["qty"] += qty
                             dup_demand["urgency"] = min(5, dup_demand.get("urgency", 3) + 1)
                         else:
                             record = {
                                 "id": make_id("D"), "time": now_str(), "source": "對話通報",
                                 "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
+                                "resource_type": resource_type, "category": category, # 💡 寫入分類
+                                "lat": lat, "lon": lon, # 💡 寫入精準座標
                                 "status": "未處理", "matched_provider": "", "verification_status": "pending", "verified_by": "", "raw_text": user_input, 
-                                "risk_flag": risk_flag, # 寫入 DLP 攔截標記
+                                "risk_flag": risk_flag,
                             }
                             record.update(extracted)
-                            if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
+                            record["district"] = district # 強制覆蓋確保正確
                             if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                             
                             st.session_state.demands.insert(0, record)
-                            reply = f"✅ **立案成功**！已寫入需求池：{record.get('item')} x {record.get('qty')}"
-                            
-                            if risk_flag:
-                                reply += f"\n\n*(🛡️ 系統已遮蔽部分包含隱私或敏感內容的資訊)*"
+                            reply = f"✅ **立案成功**！已寫入需求池：{item} x {qty}\n*(AI 定位：{district})*"
+                            if risk_flag: reply += f"\n\n*(🛡️ 系統已啟動 DLP 遮蔽敏感內容)*"
                     else:
-                        # 供給端邏輯保持不變
                         record = {
                             "id": make_id("S"), "time": now_str(), "source": "對話通報",
                             "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
+                            "resource_type": resource_type, "category": category, # 💡 寫入分類
+                            "lat": lat, "lon": lon, # 💡 寫入精準座標
                             "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending", "risk_flag": risk_flag,
                         }
                         record.update(extracted)
+                        record["district"] = district
                         if "location" in record and "location_current" not in record: record["location_current"] = record["location"]
-                        if not record.get("district") or record.get("district") in ["未知", ""]: record["district"] = user.get("district", "全區")
                         if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                         
                         st.session_state.supplies.insert(0, record)
-                        reply = f"✅ **立案成功**！感謝提供：{record.get('item')} x {record.get('qty')}"
+                        reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(AI 定位：{district})*"
                 
             st.markdown(reply)
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
-
-
 
 def page_company_supply_chatbot():
     """公司/團體專用：只能用對話方式新增供給，不允許提出需求。"""
