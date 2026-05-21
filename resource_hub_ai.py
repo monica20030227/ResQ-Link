@@ -478,22 +478,33 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
     if not GROQ_API_KEY: return {"error": "尚未設定 GROQ_API_KEY"}
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1", max_retries=1, timeout=15.0) # 💡 加入超時熔斷設定
+        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1", max_retries=1, timeout=15.0)
         
         system_prompt = """
-        你是一個專業防災調度員。判斷輸入是「Demand」或「Supply」，並萃取為JSON。
+        你是一個專業防災調度員與台灣地理資訊專家。請判斷輸入是「Demand」或「Supply」，並將其精準萃取為 JSON 格式。
         
-        ⚠️ 【邊緣隱私防護與 DLP 攔截機制】：
+        ⚠️【重要：台灣地標、學校與建築物逆向解算規則】：
+        當輸入文字或圖片中包含台灣的學校、特定地標、車站、體育館、政府機關或物流中心（例如：「國立台灣大學」、「壽豐國中」、「台北101」、「花蓮車站」、「林口中儲倉」）時，你必須：
+        1. 運用你的地理知識庫，精準推導出該地標所屬的完整台灣行政區（格式必須包含完整縣市與鄉鎮市區，例如：「臺北市大安區」、「花蓮縣壽豐鄉」、「新北市林口區」），並填入 JSON 的 "district" 欄位。切勿填寫"未知"或留空！
+        2. 精準估算該地標的真實經緯度，填入 "lat" 與 "lon" 浮點數欄位。嚴禁直接盲目填寫 center 點 23.5/121.0，必須盡量貼近該著名地標的實際地理坐標。
+
+        ⚠️【邊緣隱私防護與 DLP 攔截機制】：
         若圖片或文字中包含清晰可辨識之人物臉部、傷患、遺體、個人身分證件或敏感財務資訊，請在 JSON 中將 "risk_flag" 設為 "包含敏感個資/人像"，並停止描述人體與個資細節，僅針對物資與災情環境進行萃取。若無敏感資訊，risk_flag 請填空字串 ""。
 
+        回傳格式請嚴格遵循以下 JSON 結構：
         {
           "info_type": "Demand 或 Supply",
           "data": {
-              "location": "若是Demand填地點，Supply留空",
+              "location": "輸入的地地點、學校或完整地址",
               "provider": "若是Supply填提供者，Demand留空",
-              "location_current": "若是Supply填所在地，Demand留空",
-              "category": "物資類別", "item": "具體物品", "qty": 數量, "urgency": 緊急度1-5,
-              "lat": 緯度浮點數, "lon": 經度浮點數,
+              "location_current": "若是Supply填所在地點或地標，Demand留空",
+              "category": "物資類別", 
+              "item": "具體物品", 
+              "qty": 數量, 
+              "urgency": 緊急度1-5,
+              "lat": 緯度浮點數, 
+              "lon": 經度浮點數,
+              "district": "推導出的完整台灣行政區(如：花蓮縣壽豐鄉)",
               "risk_flag": "敏感個資警告或空字串"
           }
         }
@@ -502,7 +513,7 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
         if image_bytes:
             base64_image = base64.b64encode(image_bytes).decode('utf-8')
             messages.append({"role": "user", "content": [{"type": "text", "text": str(raw_text)}, {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}}]})
-            model_name = "meta-llama/llama-4-scout-17b-16e-instruct" 
+            model_name = "meta-llama/llama-4-scout-17b-16e-instruct"
         else:
             messages.append({"role": "user", "content": str(raw_text)})
             model_name = "llama-3.3-70b-versatile"
@@ -515,12 +526,10 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
         return {"error": "格式異常", "raw": raw_output}
     
     except Exception as e: 
-        # 💡 API 熔斷捕捉：當遭遇 Rate Limit 或網路斷線時，回傳特定錯誤碼觸發降級
         error_msg = str(e).lower()
         if "429" in error_msg or "rate limit" in error_msg or "timeout" in error_msg:
             return {"error": "API_RATE_LIMIT"}
         return {"error": str(e)}
-
 # ==========================================
 # 3.5 災情去重與合併防護 (Deduplication)
 # ==========================================
@@ -997,11 +1006,11 @@ def page_home():
 def page_submit_demand():
     user = get_current_user()
     st.title("📣 提出需求 (備用表單)")
-    st.caption("建議優先使用左側『💬 智慧對話通報』。本表單經緯度將由系統 AI 自動定位。")
+    st.caption("建議優先使用左側『💬 智慧對話通報』。本表單支援輸入學校或知名地標，AI 將自動為您解析行政區與座標。")
     
     with st.form("demand_form"):
-        # 💡 為每個元件加上專屬的 key="demand_..." 避免與其他表單衝突
-        location = st.text_input("📍 需求地點 (請填寫完整地址或地標)", value=user.get("district", ""), placeholder="範例：花蓮縣壽豐鄉中山路100號", help="格式要求：需包含縣市與鄉鎮區，以利 AI 轉換經緯度。", key="demand_location")
+        # 💡 UI 修正：不再強行預填 user.get("district") 避免誤導，改用 placeholder 引導使用者輸入真正的物資需求地
+        location = st.text_input("📍 需求地點 (可填寫完整地址、學校名稱或地標)", value="", placeholder="例如：壽豐國中、台灣大學體育館、台北101 或 完整地址", help="可以填寫具體地址或知名地標、學校，AI 將自動辨識所屬行政區與座標。", key="demand_location")
         
         resource_type, category = resource_selectors("demand")
         
@@ -1017,12 +1026,18 @@ def page_submit_demand():
             st.error("❌ 送出失敗：『需求地點』與『需求品項』為必填欄位，不得為空。")
             return
             
-        with st.spinner("系統正在定位您的地址並建檔..."):
-            ai_geo_result = extract_info_with_ai(raw_text=f"地點是：{location}")
-            geo_data = ai_geo_result.get("data", {})
-            auto_lat = geo_data.get("lat", 23.8)
-            auto_lon = geo_data.get("lon", 121.0)
-            auto_district = geo_data.get("district", user.get("district", ""))
+        with st.spinner("🧠 AI 正在辨識地標並精準定位座標..."):
+            # 餵給 AI 強調這是台灣的地標
+            ai_geo_result = extract_info_with_ai(raw_text=f"請精準解析出此台灣地點或地標的所屬行政區與經緯度：{location}")
+            extracted = ai_geo_result.get("data", ai_geo_result)
+            
+            auto_district = extracted.get("district")
+            auto_lat = extracted.get("lat", 23.8)
+            auto_lon = extracted.get("lon", 121.0)
+            
+            # 💡 權責安全機制：若且唯若 AI 遭遇極端生僻字或完全認不出行政區時，才降級退守至使用者本人的註冊地
+            if not auto_district or auto_district in ["未知", "無", ""]:
+                auto_district = user.get("district", "全區")
         
         verification_status = "verified" if user.get("role") == "government" and user.get("verified") else "pending"
         demand = {
@@ -1033,15 +1048,16 @@ def page_submit_demand():
             "resource_type": resource_type, "category": category, "item": item, "qty": int(qty),
             "urgency": urgency, "status": "未處理", "matched_provider": "",
             "verification_status": verification_status, "verified_by": user.get("id") if verification_status == "verified" else "",
-            "raw_text": raw_text, "risk_flag": "",
+            "raw_text": raw_text, "risk_flag": extracted.get("risk_flag", ""),
         }
         st.session_state.demands.insert(0, demand)
-        st.success(f"✅ 需求已成功送出！已立案編號：{demand['id']}，並自動定位您的座標於 ({auto_lat}, {auto_lon})。")
+        st.success(f"✅ 需求已成功送出！案件編號：{demand['id']}。AI 已成功將地標『{location}』解析至【{auto_district}】，經緯度座標：({auto_lat}, {auto_lon})。")
 
 
 def page_submit_supply():
     user = get_current_user()
     st.title("📦 建立供給 (支援企業批次建檔)")
+    st.caption("大型企業可使用 ERP 批次匯入；地點請填寫『物資實際存放倉庫或地標』，系統將以此計算運送距離。")
     
     if "preview_supplies" not in st.session_state:
         st.session_state.preview_supplies = None
@@ -1050,28 +1066,41 @@ def page_submit_supply():
     
     with tab1:
         with st.form("supply_form"):
-            # 💡 為每個元件加上專屬的 key="supply_..."
-            provider = st.text_input("🏢 提供者名稱", value=user.get("name", ""), placeholder="範例：統一企業、吉普車救援隊", key="supply_provider")
-            location_current = st.text_input("📍 物資實際存放地點 (來源地)", value=user.get("district", ""), placeholder="範例：台南市永康區永康物流中心", help="請填寫『物資當下所在位置』，AI將據此計算運送距離。", key="supply_location")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                provider = st.text_input("🏢 提供者名稱", value=user.get("name", ""), placeholder="範例：統一企業、吉普車救援隊", key="supply_provider")
+            with col_b:
+                # 💡 UI 修正：清空預填，使用明確定標提示語
+                location_current = st.text_input("📍 物資實際存放地點 (可填學校、特定倉庫或地標)", value="", placeholder="例如：花蓮車站、林口物流中心、壽豐國中體育館", help="請填寫『物資當下所在位置』，AI將據此計算運送距離。", key="supply_location")
+            
             has_logistics = st.radio("🚚 物流配送能力", ["✅ 自有車隊/配合物流，可直接運送至災區", "❌ 無運輸能力，需平台媒合外部志工車隊載運"], key="supply_logistics")
             
-            resource_type, category = resource_selectors("supply")
-            
-            item = st.text_input("📦 可提供品項", placeholder="範例：礦泉水、發電機", help="具體的物資名稱。", key="supply_item")
-            qty = st.number_input("🔢 可提供數量", min_value=1, value=1, key="supply_qty")
+            col_c, col_d, col_e = st.columns([1.5, 2, 1])
+            with col_c:
+                resource_type, category = resource_selectors("supply")
+            with col_d:
+                item = st.text_input("📦 可提供品項", placeholder="範例：礦泉水、發電機", key="supply_item")
+            with col_e:
+                qty = st.number_input("🔢 可提供數量", min_value=1, value=1, key="supply_qty")
+                
             raw_text = st.text_area("📝 補充說明 (選填)", placeholder="例如：效期至 2027 年底。", key="supply_raw_text")
-            
             submitted = st.form_submit_button("🚀 建立單筆供給", type="primary")
 
         if submitted:
             if not item.strip() or not provider.strip() or not location_current.strip():
                 st.error("❌ 送出失敗：『提供者名稱』、『物資存放地點』與『品項』為必填。")
                 return
-            with st.spinner("AI 正在解析物資存放地座標..."):
-                geo_data = extract_info_with_ai(raw_text=f"地點是：{location_current}").get("data", {})
+            with st.spinner("🧠 AI 正在解析物資存放地與地標座標..."):
+                ai_geo_result = extract_info_with_ai(raw_text=f"請精準解析出此台灣地點或地標的所屬行政區與經緯度：{location_current}")
+                geo_data = ai_geo_result.get("data", ai_geo_result)
+                
                 lat = geo_data.get("lat", 23.8)
                 lon = geo_data.get("lon", 121.0)
-                district = geo_data.get("district", user.get("district", "全區"))
+                district = geo_data.get("district")
+                
+                # 💡 降級備援：若 AI 無法識別特殊地名，才使用使用者本身的註冊行政區
+                if not district or district in ["未知", "無", ""]:
+                    district = user.get("district", "全區")
 
             supply = {
                 "id": make_id("S"), "time": now_str(), "source": "平台表單",
@@ -1081,10 +1110,10 @@ def page_submit_supply():
                 "resource_type": resource_type, "category": category, "item": item, "qty": int(qty),
                 "has_logistics": "可自行運送" if "✅" in has_logistics else "需車隊協助",
                 "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
-                "verified_by": user.get("id") if user.get("verified") else "", "raw_text": raw_text, "risk_flag": "",
+                "verified_by": user.get("id") if user.get("verified") else "", "raw_text": raw_text, "risk_flag": geo_data.get("risk_flag", ""),
             }
             st.session_state.supplies.insert(0, supply)
-            st.success(f"✅ 成功！單筆供給 {supply['id']} 已建立完畢。")
+            st.success(f"✅ 成功！單筆供給已建立。物資來源地『{location_current}』已成功對應至【{district}】。")
 
     with tab2:
         st.info("企業用戶可直接將 ERP 報表或倉管盤點訊息貼上，AI 將自動拆解為多筆供給庫存。")
