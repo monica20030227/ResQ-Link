@@ -841,119 +841,136 @@ def submit_claim(demand, supply, claim_qty, note):
         st.error(f"系統媒合未通過：{reason}")
 
 # =========================================================
-# 5. UI Helper
+# 5.登入與註冊介面 (UX 升級版)
 # =========================================================
 def login_panel():
-    st.title("🧩 ResQ-Link 可信任災害資源分配平台")
-    st.caption("請先選擇登入身分。Demo 版不需密碼；註冊時會加入手機號碼與 OTP 驗證流程。")
+    st.markdown("""
+    <div style='text-align: center; padding: 2rem 0;'>
+        <h1 style='color: #1E3A8A; font-size: 3rem;'>🛡️ ResQ-Link</h1>
+        <h3 style='color: #3B82F6;'>可信任災害資源分配中樞</h3>
+        <p style='color: #6B7280; font-size: 1.1rem;'>
+            多模態 AI 轉譯 × 零信任驗證 × 雙向物流閉環<br>
+            <i>打造韌性臺灣的最後一哩路</i>
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    col1, col2, col3, col4 = st.columns(4)
-    role_cards = [
-        ("citizen", "👤 一般民眾", "提出需求、提供小量物資、認領需求"),
-        ("company", "🏢 公司/團體", "建立供給、認領需求、查看配對"),
-        ("government", "🏛️ 政府單位", "審核同區需求、審核認領申請"),
-        ("admin", "🛡️ 平台管理員", "總控帳號、資料、審核、異常紀錄"),
-    ]
-    cols = [col1, col2, col3, col4]
-    for col, (role, title, desc) in zip(cols, role_cards):
-        with col:
-            st.container(border=True).markdown(f"### {title}\n{desc}")
+    # 建立登入與註冊的主分頁
+    main_tab_login, main_tab_register = st.tabs(["🔑 系統登入", "📝 註冊新帳號"])
 
-    role = st.selectbox("登入身分", list(ROLE_LABELS.keys()), format_func=lambda x: ROLE_LABELS[x])
-    users = [u for u in st.session_state.users if u["role"] == role and u["status"] == "active"]
-    if not users:
-        st.warning("此角色目前沒有可登入帳號，請先註冊。")
-    else:
-        selected_user_id = st.selectbox(
-            "選擇 Demo 帳號",
-            [u["id"] for u in users],
-            format_func=lambda uid: next(
-                f"{u['name']}｜手機{'✅' if u.get('phone_verified') else '⚪'}"
-                for u in users if u["id"] == uid
-            ),
-        )
-        if st.button("登入", type="primary"):
-            selected_user = next(u for u in users if u["id"] == selected_user_id)
-            st.session_state.current_user = selected_user
-            add_audit("登入系統", f"角色：{ROLE_LABELS[role]}")
-            st.rerun()
-
-    st.divider()
-    with st.expander("➕ 註冊新帳號（含企業防偽與手機驗證）"):
-        st.info("流程：填寫資料 → 企業驗證統編 / 民眾發送 OTP → 送出註冊。")
-        with st.form("signup_form"):
-            new_role = st.selectbox("帳號類型", ["citizen", "company", "government"], format_func=lambda x: ROLE_LABELS[x])
-            name = st.text_input("姓名 / 單位名稱")
-            
-            # 💡 新增：企業專屬的統一編號欄位
-            vat_number = ""
-            if new_role == "company":
-                vat_number = st.text_input("統一編號 (8碼數字)", placeholder="例如：16098128 (統一企業)")
-                
-            email = st.text_input("Email")
-            phone = st.text_input("手機號碼", placeholder="例如：0912345678")
-            district = st.text_input("行政區", placeholder="例如：花蓮縣壽豐鄉")
-            village = st.text_input("村里", value="全區")
-            proof = st.text_area("證明資料", placeholder="政府填公務信箱；企業統編系統將自動驗證；民眾填聯絡資訊。")
-            otp_code = st.text_input("手機 OTP 驗證碼", placeholder="請輸入 6 碼驗證碼 (企業不強制)")
-
-            col_otp, col_submit = st.columns(2)
-            send_otp_btn = col_otp.form_submit_button("📱 發送手機 OTP")
-            submitted = col_submit.form_submit_button("✅ 送出註冊", type="primary")
-
-        phone_norm = normalize_phone(phone)
-
-        if send_otp_btn:
-            if not phone_norm or not is_valid_phone(phone_norm):
-                st.error("請輸入有效手機號碼。")
+    # ==========================================
+    # 🔑 系統登入區塊
+    # ==========================================
+    with main_tab_login:
+        st.write("### 請選擇您的登入身分")
+        # 💡 使用 Tabs 讓不同身分的登入表單獨立顯示，直觀且不占空間
+        login_tabs = st.tabs(["👨‍👩‍👧‍👦 一般民眾", "🏢 企業 / 團體", "🏛️ 政府指揮官", "🛡️ 系統管理員"])
+        
+        # 準備共用的登入驗證邏輯
+        def process_login(email, password, expected_role):
+            user = next((u for u in st.session_state.users if u["email"] == email and u["password"] == password), None)
+            if user:
+                if user.get("role") == expected_role:
+                    if user.get("status") == "approved":
+                        st.session_state.logged_in = True
+                        st.session_state.current_user = user
+                        st.success(f"✅ 歡迎回來，{user['name']}！")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("❌ 登入失敗：您的帳號仍在審核中，請耐心等候。")
+                else:
+                    st.error(f"❌ 登入失敗：身分錯誤。您不是 {ROLE_LABELS.get(expected_role)}。")
             else:
-                otp = send_phone_otp(phone_norm)
-                st.success(f"OTP 已送出至 {phone_norm}。Demo 驗證碼：{otp}")
+                st.error("❌ 登入失敗：帳號或密碼錯誤。")
 
-        if submitted:
-            if not name or not email or not district:
-                st.error("請至少填寫名稱、Email、行政區。")
-                return
-                
-            # 💡 企業防偽審查：模擬經濟部商業司 API
-            if new_role == "company":
-                if not re.match(r"^\d{8}$", vat_number):
-                    st.error("❌ 企業註冊請填寫正確的 8 碼統一編號！")
-                    return
-                with st.spinner("🔄 正在向經濟部商業司 API 驗證統一編號..."):
-                    time.sleep(1.5) # 模擬 API 延遲
-                st.success(f"✅ 統編 {vat_number} 驗證成功！")
-                proof = f"[統編 {vat_number} API驗證通過] " + proof
+        # 1. 民眾登入
+        with login_tabs[0]:
+            with st.form("login_citizen"):
+                st.info("一般民眾可通報災情、請求物資支援。")
+                email = st.text_input("📧 Email 帳號", key="log_cit_em")
+                password = st.text_input("🔑 密碼", type="password", key="log_cit_pw")
+                if st.form_submit_button("🚀 以【民眾】身分登入", type="primary", use_container_width=True):
+                    process_login(email, password, "citizen")
 
-            if new_role != "company" and not is_valid_phone(phone_norm):
-                st.error("手機號碼格式不正確。")
-                return
+        # 2. 企業登入
+        with login_tabs[1]:
+            with st.form("login_company"):
+                st.info("企業或NGO可大宗提供物資、認領需求與查詢 ESG 報表。")
+                email = st.text_input("📧 企業 Email", key="log_com_em")
+                password = st.text_input("🔑 密碼", type="password", key="log_com_pw")
+                if st.form_submit_button("🚀 以【企業】身分登入", type="primary", use_container_width=True):
+                    process_login(email, password, "company")
 
-            if new_role != "company" and otp_code:
-                ok, msg = verify_phone_otp(phone_norm, otp_code)
-                if not ok:
-                    st.error(msg)
-                    return
+        # 3. 政府登入
+        with login_tabs[2]:
+            with st.form("login_gov"):
+                st.info("政府指揮官與村里長，可使用 AI 戰情室與批次審核。")
+                email = st.text_input("📧 公務 Email", key="log_gov_em")
+                password = st.text_input("🔑 密碼", type="password", key="log_gov_pw")
+                if st.form_submit_button("🚀 以【政府】身分登入", type="primary", use_container_width=True):
+                    process_login(email, password, "government")
 
-            verified = False
-            status = "pending" if new_role in ["government"] else "active"
+        # 4. 管理員登入
+        with login_tabs[3]:
+            with st.form("login_admin"):
+                st.info("系統管理員專用。")
+                email = st.text_input("📧 管理員 Email", key="log_adm_em")
+                password = st.text_input("🔑 密碼", type="password", key="log_adm_pw")
+                if st.form_submit_button("🚀 以【管理員】身分登入", type="primary", use_container_width=True):
+                    process_login(email, password, "admin")
+
+        # 提供測試帳號提示
+        with st.expander("💡 忘記密碼？點此查看測試帳號 (Demo 專用)"):
+            st.code("""
+            【民眾】 user@test.com / 1234
+            【企業】 comp@test.com / 1234
+            【政府】 gov@test.com / 1234
+            【管理員】 admin@test.com / admin
+            """)
+
+    # ==========================================
+    # 📝 註冊新帳號區塊
+    # ==========================================
+    with main_tab_register:
+        st.write("### 申請加入 ResQ-Link")
+        st.caption("為確保資源真實性，企業與政府帳號需經人工審核。")
+        
+        with st.form("register_form"):
+            reg_role = st.selectbox("👤 選擇註冊身分", ["一般民眾", "公私企業/NGO", "政府單位"])
+            reg_name = st.text_input("🏷️ 姓名 / 企業名稱 / 單位名稱")
+            reg_email = st.text_input("📧 註冊 Email")
+            reg_pwd = st.text_input("🔑 設定密碼", type="password")
             
-            new_user = {
-                "id": make_id("U"),
-                "name": name,
-                "role": new_role,
-                "email": email,
-                "phone": phone_norm,
-                "phone_verified": bool(otp_code) or new_role == "company",
-                "district": district,
-                "village": village or "全區",
-                "verified": new_role == "company", # 企業統編通過直接先視為 verified
-                "status": status,
-                "proof": proof,
-            }
-            st.session_state.users.append(new_user)
-            add_audit("新帳號註冊", f"{name} / {ROLE_LABELS[new_role]}")
-            st.success("註冊完成，可回上方登入。")
+            # 動態區分轄區 (Streamlit form 內無法動態隱藏，所以全部顯示並用 placeholder 引導)
+            reg_district = st.text_input("📍 所在縣市鄉鎮 (選填)", placeholder="例如：花蓮縣壽豐鄉", help="民眾請填寫居住地；企業填寫總部；政府填寫管轄區。")
+            reg_village = st.text_input("🏘️ 所在村里 (選填)", placeholder="例如：志學村")
+            
+            submitted = st.form_submit_button("📝 送出註冊申請", type="primary", use_container_width=True)
+            
+            if submitted:
+                if not reg_name or not reg_email or not reg_pwd:
+                    st.error("❌ 姓名、Email 與密碼為必填。")
+                elif any(u["email"] == reg_email for u in st.session_state.users):
+                    st.error("❌ 此 Email 已經被註冊過了。")
+                else:
+                    role_map = {"一般民眾": "citizen", "公私企業/NGO": "company", "政府單位": "government"}
+                    new_role = role_map.get(reg_role, "citizen")
+                    # 企業與政府預設為 pending，需審核；民眾直接 approved
+                    init_status = "approved" if new_role == "citizen" else "pending"
+                    
+                    new_user = {
+                        "id": f"U{len(st.session_state.users)+1:03d}",
+                        "name": reg_name, "email": reg_email, "password": reg_pwd,
+                        "role": new_role, "status": init_status, "verified": False,
+                        "district": reg_district, "village": reg_village
+                    }
+                    st.session_state.users.append(new_user)
+                    
+                    if init_status == "approved":
+                        st.success(f"✅ 註冊成功！您現在可以切換至「系統登入」分頁登入了。")
+                    else:
+                        st.success(f"✅ 註冊已送出！您的身分是【{reg_role}】，帳號需經系統管理員審核通過後方可登入。")
 
 def sidebar_layout():
     user = get_current_user()
