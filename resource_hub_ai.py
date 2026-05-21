@@ -844,90 +844,166 @@ def submit_claim(demand, supply, claim_qty, note):
 # 5.登入與註冊介面 (UX 升級版)
 # =========================================================
 def login_panel():
-    st.markdown("""
-    <div style='text-align: center; padding: 2rem 0;'>
-        <h1 style='color: #1E3A8A; font-size: 3rem;'>🛡️ ResQ-Link</h1>
-        <h3 style='color: #3B82F6;'>可信任災害資源分配中樞</h3>
-        <p style='color: #6B7280; font-size: 1.1rem;'>
-            多模態 AI 轉譯 × 零信任驗證 × 雙向物流閉環<br>
-            <i>打造韌性臺灣的最後一哩路</i>
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("🧩 ResQ-Link 韌性臺灣")
+    st.subheader("智慧資源調配與災情樞紐")
+    st.markdown("請選擇您的身分以登入系統，攜手建立臺灣的災防韌性。")
+    
+    # 💡 確保有紀錄當前選中的登入角色
+    if "selected_login_role" not in st.session_state:
+        st.session_state.selected_login_role = None
 
-    # 建立登入與註冊的主分頁
-    main_tab_login, main_tab_register = st.tabs(["🔑 系統登入", "📝 註冊新帳號"])
+    st.markdown("<br>", unsafe_allow_html=True) # 增加視覺空間
 
     # ==========================================
-    # 🔑 系統登入區塊
+    # 💡 建立三個大型身分區塊 (利用 Columns 與 Buttons)
     # ==========================================
-    with main_tab_login:
-        st.write("### 請選擇您的登入身分")
-        # 💡 使用 Tabs 讓不同身分的登入表單獨立顯示，直觀且不占空間
-        login_tabs = st.tabs(["👨‍👩‍👧‍👦 一般民眾", "🏢 企業 / 團體", "🏛️ 政府指揮官", "🛡️ 系統管理員"])
-        
-        # 準備共用的登入驗證邏輯
-        def process_login(email, password, expected_role):
-            user = next((u for u in st.session_state.users if u["email"] == email and u["password"] == password), None)
-            if user:
-                if user.get("role") == expected_role:
-                    if user.get("status") == "approved":
-                        st.session_state.logged_in = True
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # 使用自訂的 CSS 讓按鈕看起來像大卡片 (Streamlit 預設按鈕有極限，但我們可用 emoji + 換行模擬)
+        st.markdown("### 👨‍👩‍👧‍👦 一般民眾")
+        st.caption("災情通報 / 尋求協助 / 志工參與")
+        if st.button("由此登入 ➡️", key="btn_role_citizen", use_container_width=True):
+            st.session_state.selected_login_role = "citizen"
+            st.rerun()
+            
+    with col2:
+        st.markdown("### 🏢 公私企業")
+        st.caption("物資捐贈 / 企業庫存調派 / ESG")
+        if st.button("由此登入 ➡️", key="btn_role_company", use_container_width=True):
+            st.session_state.selected_login_role = "company"
+            st.rerun()
+            
+    with col3:
+        st.markdown("### 🏛️ 災防政府")
+        st.caption("全局戰情室 / 物資審核 / 派車調度")
+        if st.button("由此登入 ➡️", key="btn_role_government", use_container_width=True):
+            st.session_state.selected_login_role = "government"
+            st.rerun()
+
+    st.divider()
+
+    # ==========================================
+    # 💡 依據點擊的區塊，展開對應的登入表單
+    # ==========================================
+    current_role = st.session_state.selected_login_role
+
+    if current_role == "citizen":
+        # --------- 民眾登入區 ---------
+        with st.container(border=True):
+            st.subheader("👨‍👩‍👧‍👦 民眾登入/註冊")
+            with st.form("citizen_login_form"):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    login_email = st.text_input("📧 電子信箱", placeholder="example@gmail.com")
+                    login_name = st.text_input("👤 姓名/暱稱", placeholder="王大明")
+                with col_b:
+                    login_district = st.text_input("📍 所在鄉鎮市區", placeholder="花蓮縣壽豐鄉", help="用於緊急事件預設定位")
+                    login_village = st.text_input("🏘️ 所在村里 (選填)", placeholder="志學村")
+                    
+                submitted = st.form_submit_button("🚀 登入系統", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if login_email.strip() and login_name.strip() and login_district.strip():
+                        # 在資料庫中尋找或建立用戶
+                        user = next((u for u in st.session_state.users if u["email"] == login_email), None)
+                        if not user:
+                            user = {
+                                "id": make_id("U"), "email": login_email, "name": login_name,
+                                "role": "citizen", "district": login_district, "village": login_village,
+                                "verified": False
+                            }
+                            st.session_state.users.append(user)
                         st.session_state.current_user = user
-                        st.success(f"✅ 歡迎回來，{user['name']}！")
-                        time.sleep(1)
+                        st.session_state.logged_in = True
                         st.rerun()
                     else:
-                        st.error("❌ 登入失敗：您的帳號仍在審核中，請耐心等候。")
-                else:
-                    st.error(f"❌ 登入失敗：身分錯誤。您不是 {ROLE_LABELS.get(expected_role)}。")
-            else:
-                st.error("❌ 登入失敗：帳號或密碼錯誤。")
+                        st.error("❌ 信箱、姓名、所在鄉鎮市區為必填欄位。")
 
-        # 1. 民眾登入
-        with login_tabs[0]:
-            with st.form("login_citizen"):
-                st.info("一般民眾可通報災情、請求物資支援。")
-                email = st.text_input("📧 Email 帳號", key="log_cit_em")
-                password = st.text_input("🔑 密碼", type="password", key="log_cit_pw")
-                if st.form_submit_button("🚀 以【民眾】身分登入", type="primary", use_container_width=True):
-                    process_login(email, password, "citizen")
+    elif current_role == "company":
+        # --------- 企業登入區 ---------
+        with st.container(border=True):
+            st.subheader("🏢 企業/組織 登入")
+            with st.form("company_login_form"):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    login_email = st.text_input("📧 企業聯絡信箱", placeholder="contact@company.com.tw")
+                    login_name = st.text_input("🏢 企業/組織名稱", placeholder="統一企業")
+                with col_b:
+                    login_district = st.text_input("📍 總部所在鄉鎮市區", placeholder="台南市永康區")
+                    tax_id = st.text_input("🧾 統一編號 (用於官方認證)", placeholder="12345678", max_chars=8)
+                
+                st.info("🔒 登入即同意平台存取您的 ESG 貢獻紀錄。")
+                submitted = st.form_submit_button("🚀 登入企業戰情中心", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if login_email.strip() and login_name.strip() and login_district.strip():
+                        user = next((u for u in st.session_state.users if u["email"] == login_email), None)
+                        if not user:
+                            user = {
+                                "id": make_id("U"), "email": login_email, "name": login_name,
+                                "role": "company", "district": login_district, "village": "全區",
+                                "verified": bool(tax_id.strip() == "12345678") # Demo 用：輸入特定統編即認證
+                            }
+                            st.session_state.users.append(user)
+                        st.session_state.current_user = user
+                        st.session_state.logged_in = True
+                        st.rerun()
+                    else:
+                        st.error("❌ 信箱、企業名稱、所在區為必填。")
 
-        # 2. 企業登入
-        with login_tabs[1]:
-            with st.form("login_company"):
-                st.info("企業或NGO可大宗提供物資、認領需求與查詢 ESG 報表。")
-                email = st.text_input("📧 企業 Email", key="log_com_em")
-                password = st.text_input("🔑 密碼", type="password", key="log_com_pw")
-                if st.form_submit_button("🚀 以【企業】身分登入", type="primary", use_container_width=True):
-                    process_login(email, password, "company")
-
-        # 3. 政府登入
-        with login_tabs[2]:
-            with st.form("login_gov"):
-                st.info("政府指揮官與村里長，可使用 AI 戰情室與批次審核。")
-                email = st.text_input("📧 公務 Email", key="log_gov_em")
-                password = st.text_input("🔑 密碼", type="password", key="log_gov_pw")
-                if st.form_submit_button("🚀 以【政府】身分登入", type="primary", use_container_width=True):
-                    process_login(email, password, "government")
-
-        # 4. 管理員登入
-        with login_tabs[3]:
-            with st.form("login_admin"):
-                st.info("系統管理員專用。")
-                email = st.text_input("📧 管理員 Email", key="log_adm_em")
-                password = st.text_input("🔑 密碼", type="password", key="log_adm_pw")
-                if st.form_submit_button("🚀 以【管理員】身分登入", type="primary", use_container_width=True):
-                    process_login(email, password, "admin")
-
-        # 提供測試帳號提示
-        with st.expander("💡 忘記密碼？點此查看測試帳號 (Demo 專用)"):
-            st.code("""
-            【民眾】 user@test.com / 1234
-            【企業】 comp@test.com / 1234
-            【政府】 gov@test.com / 1234
-            【管理員】 admin@test.com / admin
-            """)
+    elif current_role == "government":
+        # --------- 政府登入區 ---------
+        with st.container(border=True):
+            st.subheader("🏛️ 政府指揮官/村里長 登入")
+            with st.form("gov_login_form"):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    login_email = st.text_input("📧 公務信箱", placeholder="admin@gov.tw")
+                    login_name = st.text_input("👤 長官姓名/職稱", placeholder="林指揮官")
+                with col_b:
+                    login_district = st.text_input("📍 管轄鄉鎮市區", placeholder="花蓮縣壽豐鄉 (或填『全區』)")
+                    auth_code = st.text_input("🔑 公務授權碼", type="password", placeholder="請輸入 admin")
+                
+                submitted = st.form_submit_button("🛡️ 進入指揮中心", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if auth_code == "admin":
+                        user = next((u for u in st.session_state.users if u["email"] == login_email), None)
+                        if not user:
+                            user = {
+                                "id": make_id("U"), "email": login_email, "name": login_name,
+                                "role": "government", "district": login_district, "village": "全區",
+                                "verified": True
+                            }
+                            st.session_state.users.append(user)
+                        st.session_state.current_user = user
+                        st.session_state.logged_in = True
+                        st.rerun()
+                    else:
+                        st.error("❌ 授權碼錯誤！(Demo 請輸入 admin)")
+    
+    # 💡 隱藏管理員通道 (在頁面最下方淡色字體，或需特定動作觸發，這裡我們放個小按鈕)
+    if not current_role:
+        st.markdown("<br><br><br>", unsafe_allow_html=True)
+        col_x, col_y, col_z = st.columns([1,1,1])
+        with col_y:
+            if st.button("⚙️ 系統管理員登入", key="btn_role_admin", use_container_width=True):
+                st.session_state.selected_login_role = "admin"
+                st.rerun()
+                
+    elif current_role == "admin":
+        with st.container(border=True):
+            st.subheader("⚙️ 系統管理員 登入")
+            with st.form("admin_login_form"):
+                login_email = st.text_input("📧 管理員帳號", value="sysadmin@resq.tw")
+                auth_code = st.text_input("🔑 密碼", type="password")
+                submitted = st.form_submit_button("登入管理後台", type="primary", use_container_width=True)
+                if submitted:
+                    user = {"id": "A001", "email": login_email, "name": "系統管理員", "role": "admin", "district": "全區", "village": "全區", "verified": True}
+                    st.session_state.current_user = user
+                    st.session_state.logged_in = True
+                    st.rerun()
 
     # ==========================================
     # 📝 註冊新帳號區塊
