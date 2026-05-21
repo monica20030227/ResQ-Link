@@ -848,19 +848,18 @@ def login_panel():
     st.subheader("智慧資源調配與災情樞紐")
     st.markdown("請選擇您的身分以登入系統，攜手建立臺灣的災防韌性。")
     
-    # 💡 確保有紀錄當前選中的登入角色
+    # 確保有紀錄當前選中的登入角色
     if "selected_login_role" not in st.session_state:
         st.session_state.selected_login_role = None
 
-    st.markdown("<br>", unsafe_allow_html=True) # 增加視覺空間
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # ==========================================
-    # 💡 建立三個大型身分區塊 (利用 Columns 與 Buttons)
+    # 三個大型身分區塊
     # ==========================================
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        # 使用自訂的 CSS 讓按鈕看起來像大卡片 (Streamlit 預設按鈕有極限，但我們可用 emoji + 換行模擬)
         st.markdown("### 👨‍👩‍👧‍👦 一般民眾")
         st.caption("災情通報 / 尋求協助 / 志工參與")
         if st.button("由此登入 ➡️", key="btn_role_citizen", use_container_width=True):
@@ -884,7 +883,7 @@ def login_panel():
     st.divider()
 
     # ==========================================
-    # 💡 依據點擊的區塊，展開對應的登入表單
+    # 依據點擊區塊，展開對應登入表單與狀態回饋
     # ==========================================
     current_role = st.session_state.selected_login_role
 
@@ -905,17 +904,27 @@ def login_panel():
                 
                 if submitted:
                     if login_email.strip() and login_name.strip() and login_district.strip():
-                        # 在資料庫中尋找或建立用戶
                         user = next((u for u in st.session_state.users if u["email"] == login_email), None)
+                        is_new_user = False
                         if not user:
+                            is_new_user = True
                             user = {
                                 "id": make_id("U"), "email": login_email, "name": login_name,
                                 "role": "citizen", "district": login_district, "village": login_village,
                                 "verified": False
                             }
                             st.session_state.users.append(user)
+                            
                         st.session_state.current_user = user
                         st.session_state.logged_in = True
+                        
+                        # 💡 新增：狀態回饋與停留
+                        if is_new_user:
+                            st.success("🎉 新帳號註冊成功！正在為您導向系統...")
+                        else:
+                            st.success(f"✅ 登入成功！歡迎回來，{login_name}。")
+                        
+                        time.sleep(1.2) # 讓使用者有時間看見回饋
                         st.rerun()
                     else:
                         st.error("❌ 信箱、姓名、所在鄉鎮市區為必填欄位。")
@@ -939,15 +948,30 @@ def login_panel():
                 if submitted:
                     if login_email.strip() and login_name.strip() and login_district.strip():
                         user = next((u for u in st.session_state.users if u["email"] == login_email), None)
+                        is_new_user = False
+                        is_verified = bool(tax_id.strip() == "12345678") # Demo: 輸入特定統編即認證
+                        
                         if not user:
+                            is_new_user = True
                             user = {
                                 "id": make_id("U"), "email": login_email, "name": login_name,
                                 "role": "company", "district": login_district, "village": "全區",
-                                "verified": bool(tax_id.strip() == "12345678") # Demo 用：輸入特定統編即認證
+                                "verified": is_verified 
                             }
                             st.session_state.users.append(user)
+                            
                         st.session_state.current_user = user
                         st.session_state.logged_in = True
+                        
+                        # 💡 新增：狀態回饋與停留
+                        if is_new_user and is_verified:
+                            st.success(f"🎉 企業帳號註冊成功！系統已透過統編驗證您的【官方身分】。")
+                        elif is_new_user and not is_verified:
+                            st.warning(f"⏳ 企業帳號註冊成功！目前狀態為【等待驗證】，部分功能將受限。")
+                        else:
+                            st.success(f"✅ 登入成功！進入企業戰情中心。")
+                            
+                        time.sleep(1.5)
                         st.rerun()
                     else:
                         st.error("❌ 信箱、企業名稱、所在區為必填。")
@@ -977,13 +1001,18 @@ def login_panel():
                                 "verified": True
                             }
                             st.session_state.users.append(user)
+                            
                         st.session_state.current_user = user
                         st.session_state.logged_in = True
+                        
+                        # 💡 新增：狀態回饋與停留
+                        st.success(f"✅ 授權成功！長官好，正在為您開啟指揮中心...")
+                        time.sleep(1.2)
                         st.rerun()
                     else:
                         st.error("❌ 授權碼錯誤！(Demo 請輸入 admin)")
     
-    # 💡 隱藏管理員通道 (在頁面最下方淡色字體，或需特定動作觸發，這裡我們放個小按鈕)
+    # --------- 隱藏管理員通道 ---------
     if not current_role:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
         col_x, col_y, col_z = st.columns([1,1,1])
@@ -1003,50 +1032,10 @@ def login_panel():
                     user = {"id": "A001", "email": login_email, "name": "系統管理員", "role": "admin", "district": "全區", "village": "全區", "verified": True}
                     st.session_state.current_user = user
                     st.session_state.logged_in = True
+                    
+                    st.success("✅ 認證通過，登入管理後台...")
+                    time.sleep(1.0)
                     st.rerun()
-
-    # ==========================================
-    # 📝 註冊新帳號區塊
-    # ==========================================
-    with main_tab_register:
-        st.write("### 申請加入 ResQ-Link")
-        st.caption("為確保資源真實性，企業與政府帳號需經人工審核。")
-        
-        with st.form("register_form"):
-            reg_role = st.selectbox("👤 選擇註冊身分", ["一般民眾", "公私企業/NGO", "政府單位"])
-            reg_name = st.text_input("🏷️ 姓名 / 企業名稱 / 單位名稱")
-            reg_email = st.text_input("📧 註冊 Email")
-            reg_pwd = st.text_input("🔑 設定密碼", type="password")
-            
-            # 動態區分轄區 (Streamlit form 內無法動態隱藏，所以全部顯示並用 placeholder 引導)
-            reg_district = st.text_input("📍 所在縣市鄉鎮 (選填)", placeholder="例如：花蓮縣壽豐鄉", help="民眾請填寫居住地；企業填寫總部；政府填寫管轄區。")
-            reg_village = st.text_input("🏘️ 所在村里 (選填)", placeholder="例如：志學村")
-            
-            submitted = st.form_submit_button("📝 送出註冊申請", type="primary", use_container_width=True)
-            
-            if submitted:
-                if not reg_name or not reg_email or not reg_pwd:
-                    st.error("❌ 姓名、Email 與密碼為必填。")
-                elif any(u["email"] == reg_email for u in st.session_state.users):
-                    st.error("❌ 此 Email 已經被註冊過了。")
-                else:
-                    role_map = {"一般民眾": "citizen", "公私企業/NGO": "company", "政府單位": "government"}
-                    new_role = role_map.get(reg_role, "citizen")
-                    # 企業與政府預設為 pending，需審核；民眾直接 approved
-                    init_status = "approved" if new_role == "citizen" else "pending"
-                    
-                    new_user = {
-                        "id": f"U{len(st.session_state.users)+1:03d}",
-                        "name": reg_name, "email": reg_email, "password": reg_pwd,
-                        "role": new_role, "status": init_status, "verified": False,
-                        "district": reg_district, "village": reg_village
-                    }
-                    st.session_state.users.append(new_user)
-                    
-                    if init_status == "approved":
-                        st.success(f"✅ 註冊成功！您現在可以切換至「系統登入」分頁登入了。")
-                    else:
-                        st.success(f"✅ 註冊已送出！您的身分是【{reg_role}】，帳號需經系統管理員審核通過後方可登入。")
 
 def sidebar_layout():
     user = get_current_user()
