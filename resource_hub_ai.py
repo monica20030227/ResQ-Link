@@ -275,6 +275,8 @@ def init_session_state():
         st.session_state.chat_history = [
             {"role": "assistant", "content": "您好！我是防救災通報機器人。請描述所在地、需求或可提供的資源。"}
         ]
+        
+    if "disasters" not in st.session_state: st.session_state.disasters = []
 
 
 def add_audit(action, detail):
@@ -1567,26 +1569,36 @@ def page_multimodal():
             district = extracted.get("district")
             if not district or district in ["未知", "無", ""]: district = user.get("district", "全區")
             
-            # 💡 純災情照片處理
-            is_demand = "demand" in info_type or "disaster" in info_type
-            if "disaster" in info_type:
-                item = "純災情通報"
-                qty = 1
-                category = "災情回報"
-
-            if not item or item in ["未知", "無", ""]:
-                st.warning("⚠️ 失敗：AI 無法找到『具體物資名稱或災情狀態』。")
-                return
-            if qty <= 0:
-                st.warning("⚠️ 失敗：AI 無法判斷『數量』。")
-                return
-
             user = get_current_user()
-            
             if risk_flag:
                 st.warning(f"🛡️ **DLP 防護啟動**：AI 偵測到 {risk_flag}，已自動遮蔽部分敏感細節。")
-            
-            if is_demand:
+
+            # ==========================================
+            # 💡 路由 1：純災情照片
+            # ==========================================
+            if "disaster" in info_type:
+                if "disasters" not in st.session_state: st.session_state.disasters = []
+                record = {
+                    "id": make_id("E"), "time": now_str(), "source": "AI轉譯",
+                    "reporter_id": user.get("id"), "reporter_name": user.get("name"),
+                    "district": district, "location": extracted.get("location", ""),
+                    "lat": lat, "lon": lon, "description": extracted.get("item", "純災情通報"),
+                    "raw_text": text_to_send, "risk_flag": risk_flag, "status": "未處理"
+                }
+                st.session_state.disasters.insert(0, record)
+                st.success(f"🚨 **災情記錄成功**！此現場畫面已獨立標記於防災地圖 (AI定位: {district})")
+
+            # ==========================================
+            # 💡 路由 2：需求照片
+            # ==========================================
+            elif "demand" in info_type:
+                if not item or item in ["未知", "無", ""]:
+                    st.warning("⚠️ 失敗：AI 無法找到『具體物資名稱』。")
+                    return
+                if qty <= 0:
+                    st.warning("⚠️ 失敗：AI 無法判斷『數量』。")
+                    return
+                    
                 record = {
                     "id": make_id("D"), "time": now_str(), "source": "AI轉譯",
                     "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
@@ -1602,11 +1614,19 @@ def page_multimodal():
                 record["district"] = district
                 if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                 st.session_state.demands.insert(0, record)
+                st.success(f"✅ 成功！已寫入一筆需求：{item} x {qty} (AI定位: {district})")
                 
-                msg_text = "災情通報" if "disaster" in info_type else f"需求：{item} x {qty}"
-                st.success(f"✅ 成功！已寫入一筆{msg_text} (AI定位: {district})")
+            # ==========================================
+            # 💡 路由 3：供給照片
+            # ==========================================
             else:
-                # 供給邏輯不變
+                if not item or item in ["未知", "無", ""]:
+                    st.warning("⚠️ 失敗：AI 無法找到『具體物資名稱』。")
+                    return
+                if qty <= 0:
+                    st.warning("⚠️ 失敗：AI 無法判斷『數量』。")
+                    return
+                    
                 record = {
                     "id": make_id("S"), "time": now_str(), "source": "AI轉譯",
                     "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
@@ -1685,21 +1705,34 @@ def page_chatbot():
                 if not district or district in ["未知", "無", ""]:
                     district = user.get("district", "全區")
                 
-                # 💡 新增：將純災情也視為一種 Demand 記錄下來，供地圖顯示
-                is_demand = "demand" in info_type or "disaster" in info_type
-                
-                if not item or item in ["未知", "無", ""]:
-                    reply = "⚠️ **通報失敗**：無法辨識具體的狀況或品項。請重新輸入，例如：『我需要 5 台抽水機』或『這裡嚴重積水』。"
-                elif qty <= 0 and "disaster" not in info_type:
-                    reply = "⚠️ **通報失敗**：無法辨識有效的「數量」。請明確告知數量。"
-                else:
-                    if is_demand:
-                        if "disaster" in info_type:
-                            item = "純災情通報"
-                            qty = 1
-                            category = "災情回報"
-                            
-                        dup_demand = check_duplicate_demand(district, item) if "disaster" not in info_type else None
+                # ==========================================
+                # 💡 路由 1：純災情通報 (獨立建檔)
+                # ==========================================
+                if "disaster" in info_type:
+                    if "disasters" not in st.session_state: st.session_state.disasters = []
+                    record = {
+                        "id": make_id("E"), # Emergency
+                        "time": now_str(), "source": "對話通報",
+                        "reporter_id": user.get("id"), "reporter_name": user.get("name"), "reporter_email": user.get("email"),
+                        "district": district, "location": extracted.get("location", ""),
+                        "lat": lat, "lon": lon, 
+                        "description": extracted.get("item", "純災情通報"), 
+                        "raw_text": user_input, "risk_flag": risk_flag, "status": "未處理"
+                    }
+                    st.session_state.disasters.insert(0, record)
+                    reply = f"🚨 **災情已獨立記錄**！此通報已直接標記於防災地圖，不會混入物資需求池中。\n*(AI 定位：{district})*"
+                    if risk_flag: reply += f"\n\n*(🛡️ 系統已啟動 DLP 遮蔽敏感內容)*"
+
+                # ==========================================
+                # 💡 路由 2：物資需求 (Demand)
+                # ==========================================
+                elif "demand" in info_type:
+                    if not item or item in ["未知", "無", ""]:
+                        reply = "⚠️ **通報失敗**：無法辨識具體的品項。請重新輸入，例如：『我需要 5 台抽水機』。"
+                    elif qty <= 0:
+                        reply = "⚠️ **通報失敗**：無法辨識有效的「數量」。請明確告知數量。"
+                    else:
+                        dup_demand = check_duplicate_demand(district, item)
                         
                         if dup_demand:
                             reply = f"🚨 **系統提示**：發現同區域已有相似需求：【{dup_demand['id']} - {dup_demand['item']}】。已將您的通報列為緊急附議！"
@@ -1721,29 +1754,27 @@ def page_chatbot():
                             if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                             
                             st.session_state.demands.insert(0, record)
-                            
-                            if "disaster" in info_type:
-                                reply = f"🚨 **災情已記錄**！系統已將您的通報標記於防災地圖上以供救援單位參考。\n*(AI 定位：{district})*"
-                            else:
-                                reply = f"✅ **立案成功**！已寫入需求池：{item} x {qty}\n*(AI 定位：{district})*"
-                                
+                            reply = f"✅ **立案成功**！已寫入需求池：{item} x {qty}\n*(AI 定位：{district})*"
                             if risk_flag: reply += f"\n\n*(🛡️ 系統已啟動 DLP 遮蔽敏感內容)*"
-                    else:
-                        # Supply 邏輯保持不變
-                        record = {
-                            "id": make_id("S"), "time": now_str(), "source": "對話通報",
-                            "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
-                            "resource_type": resource_type, "category": category, 
-                            "lat": lat, "lon": lon, 
-                            "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending", "risk_flag": risk_flag,
-                        }
-                        record.update(extracted)
-                        record["district"] = district
-                        if "location" in record and "location_current" not in record: record["location_current"] = record["location"]
-                        if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
-                        
-                        st.session_state.supplies.insert(0, record)
-                        reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(AI 定位：{district})*"
+
+                # ==========================================
+                # 💡 路由 3：物資供給 (Supply)
+                # ==========================================
+                else:
+                    record = {
+                        "id": make_id("S"), "time": now_str(), "source": "對話通報",
+                        "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
+                        "resource_type": resource_type, "category": category, 
+                        "lat": lat, "lon": lon, 
+                        "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending", "risk_flag": risk_flag,
+                    }
+                    record.update(extracted)
+                    record["district"] = district
+                    if "location" in record and "location_current" not in record: record["location_current"] = record["location"]
+                    if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
+                    
+                    st.session_state.supplies.insert(0, record)
+                    reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(AI 定位：{district})*"
                 
             st.markdown(reply)
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
