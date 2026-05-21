@@ -1957,7 +1957,8 @@ def page_company_supply_center():
                 
         if user_input := st.chat_input("輸入範例：台南永康倉庫可提供 500 箱礦泉水..."):
             st.session_state.comp_supply_chat.append({"role": "user", "content": user_input})
-            with st.chat_message("user"): st.markdown(user_input)
+            with st.chat_message("user"): 
+                st.markdown(user_input)
                 
             with st.chat_message("assistant"):
                 demand_keywords = ["需要", "急需", "需求", "求助", "缺", "救援", "幫我找"]
@@ -1968,7 +1969,7 @@ def page_company_supply_center():
                     st.warning(reply)
                     st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
                 else:
-                   with st.spinner("🧠 AI 正在解析物資與倉儲地標..."):
+                    with st.spinner("🧠 AI 正在解析物資與倉儲地標..."):
                         result = extract_info_with_ai(raw_text=f"這是企業供給資訊，請以 Supply 解析，找出物資存放實際地標：{user_input}")
                         if result.get("error") == "API_RATE_LIMIT":
                             reply = "⚠️ AI 伺服器滿載，請改用「✍️ 手動備援表單」。"
@@ -2018,6 +2019,7 @@ def page_company_supply_center():
                                     st.session_state.supplies.insert(0, record)
                                     reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(倉儲：{record['location_current']} ｜ AI 定位：{district})*"
                                 
+                    # 💡 注意這裡：與 with st.spinner 對齊
                     if "reply" in locals():
                         st.markdown(reply)
                         st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
