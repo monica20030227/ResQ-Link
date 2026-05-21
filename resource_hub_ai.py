@@ -2074,10 +2074,27 @@ def page_company_supply_center():
     with tab4:
         my_supplies = [s for s in st.session_state.supplies if s.get("provider_id") == user.get("id")]
         if my_supplies:
+            df = pd.DataFrame(my_supplies)
+            
+            # 💡 欄位防呆補齊機制：確保舊資料或殘缺資料不會引發 KeyError
+            display_cols = ["id", "time", "location_current", "item", "qty", "has_logistics", "status"]
+            for col in display_cols:
+                if col not in df.columns:
+                    df[col] = "未提供" # 若舊資料缺漏此欄位，自動補上預設值
+                    
             st.dataframe(
-                pd.DataFrame(my_supplies)[["id", "time", "location_current", "item", "qty", "has_logistics", "status"]],
-                column_config={"id": "編號", "time": "登錄時間", "location_current": "存放地", "item": "品項", "qty": "數量", "status": "狀態"},
-                hide_index=True, use_container_width=True
+                df[display_cols],
+                column_config={
+                    "id": "編號", 
+                    "time": "登錄時間", 
+                    "location_current": "存放地", 
+                    "item": "品項", 
+                    "qty": "數量", 
+                    "has_logistics": "物流配送",
+                    "status": "狀態"
+                },
+                hide_index=True, 
+                use_container_width=True
             )
         else:
             st.info("目前尚無供給紀錄。")
