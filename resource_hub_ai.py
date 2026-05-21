@@ -481,34 +481,36 @@ def extract_info_with_ai(raw_text=None, image_bytes=None, mime_type="image/jpeg"
         client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1", max_retries=1, timeout=15.0)
         
         system_prompt = """
-        你是一個專業防災調度員與台灣地理資訊專家。請判斷輸入是「Demand」或「Supply」，並將其精準萃取為 JSON 格式。
+        你是一個專業防災調度員與台灣地理資訊專家。請將輸入精準萃取為 JSON 格式。
         
-        ⚠️【重要：資源分類規則】：
-        "resource_type" 必須嚴格填入以下三者之一：
-        - "有形資源"：食物、水、工具、機具、物資等實體物品。
-        - "無形資源"：人力、志工、醫療支援、技術、心理諮詢等。
-        - "金流資源"：現金捐款、採購金等。
+        ⚠️【重要：訊息分類 (info_type) 規則】：
+        你必須將輸入歸類為以下四種之一，並填入 "info_type"：
+        1. "Demand"：明確要求物資、救援或人力。
+        2. "Supply"：明確提供物資、救援或人力。
+        3. "Disaster"：僅回報災情現場狀況（如「房屋倒塌」、「淹水」），未提及具體物資需求。此時請將 "item" 統一填寫為 "災情通報"，"qty" 填寫 1。
+        4. "Irrelevant"：無關災防調度的閒聊（如「你好」、「測試」、「今天天氣不錯」）。
 
-        ⚠️【重要：地理座標強制解算規則】：
-        無論使用者輸入的是「完整地址」、「學校」、「特定地標」、「交流道」甚至是「村里名稱」，你都必須：
-        1. 推導出該地所屬的完整台灣行政區，填入 "district" 欄位 (如：花蓮縣壽豐鄉)。
-        2. 運用地理知識，強制估算該地點的精準經緯度，並填入 "lat" 與 "lon" 浮點數欄位。嚴禁盲目填寫 23.5/121.0。
+        ⚠️【重要：資源分類規則 (若為Demand或Supply)】：
+        "resource_type" 必須為："有形資源"、"無形資源" 或 "金流資源"。若是 Disaster，請填 "無形資源"，category 填 "純災情"。
+
+        ⚠️【地理座標強制解算規則】：
+        強制推導完整台灣行政區 (district) 以及精準經緯度 (lat, lon)。
 
         ⚠️【DLP 隱私防護】：
         若包含清晰人臉、遺體、身分證件，請將 "risk_flag" 設為 "包含敏感個資/人像"，並忽略敏感細節。
 
         回傳格式請嚴格遵循以下 JSON 結構：
         {
-          "info_type": "Demand 或 Supply",
+          "info_type": "Demand 或 Supply 或 Disaster 或 Irrelevant",
           "data": {
-              "resource_type": "有形資源 或 無形資源 或 金流資源",
+              "resource_type": "資源大類",
               "category": "次要物資類別",
-              "item": "具體物品", 
+              "item": "具體物品或災情通報", 
               "qty": 數量, 
               "urgency": 緊急度1-5,
-              "location": "若是Demand填地點，Supply留空",
-              "provider": "若是Supply填提供者，Demand留空",
-              "location_current": "若是Supply填所在地，Demand留空",
+              "location": "若是Demand/Disaster填地點，Supply留空",
+              "provider": "若是Supply填提供者，Demand/Disaster留空",
+              "location_current": "若是Supply填所在地",
               "lat": 緯度浮點數, 
               "lon": 經度浮點數,
               "district": "完整台灣行政區",
@@ -1542,14 +1544,19 @@ def page_multimodal():
                 st.error(f"❌ 解析失敗：{result['error']}")
                 return
                 
+            info_type = result.get("info_type", "").lower()
+            
+            # 💡 處理無關圖片或文字
+            if "irrelevant" in info_type:
+                st.warning("⚠️ AI 無法從您的圖片或文字中找出與災情或物資調度相關的內容，建檔已終止。")
+                return
+                
             extracted = result.get("data", result)
             item = extracted.get("item", "")
             qty = extracted.get("qty", 0)
             risk_flag = extracted.get("risk_flag", "")
             
-            # 💡 確保讀取資源類別與座標
             resource_type = extracted.get("resource_type", "有形資源")
-            if resource_type not in ["有形資源", "無形資源", "金流資源"]: resource_type = "有形資源"
             category = extracted.get("category", "未分類")
             
             try: lat = float(extracted.get("lat", 23.5))
@@ -1557,19 +1564,24 @@ def page_multimodal():
             try: lon = float(extracted.get("lon", 121.0))
             except: lon = 121.0
             
+            district = extracted.get("district")
+            if not district or district in ["未知", "無", ""]: district = user.get("district", "全區")
+            
+            # 💡 純災情照片處理
+            is_demand = "demand" in info_type or "disaster" in info_type
+            if "disaster" in info_type:
+                item = "純災情通報"
+                qty = 1
+                category = "災情回報"
+
             if not item or item in ["未知", "無", ""]:
-                st.warning("⚠️ 失敗：AI 無法找到『具體物資名稱』。")
+                st.warning("⚠️ 失敗：AI 無法找到『具體物資名稱或災情狀態』。")
                 return
             if qty <= 0:
                 st.warning("⚠️ 失敗：AI 無法判斷『數量』。")
                 return
 
             user = get_current_user()
-            is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
-            
-            district = extracted.get("district")
-            if not district or district in ["未知", "無", ""]:
-                district = user.get("district", "全區")
             
             if risk_flag:
                 st.warning(f"🛡️ **DLP 防護啟動**：AI 偵測到 {risk_flag}，已自動遮蔽部分敏感細節。")
@@ -1578,23 +1590,28 @@ def page_multimodal():
                 record = {
                     "id": make_id("D"), "time": now_str(), "source": "AI轉譯",
                     "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
-                    "resource_type": resource_type, "category": category, # 💡 寫入
-                    "lat": lat, "lon": lon, # 💡 寫入
+                    "resource_type": resource_type, "category": category, 
+                    "lat": lat, "lon": lon, 
                     "status": "未處理", "matched_provider": "", "verification_status": "verified" if user.get("role") == "government" and user.get("verified") else "pending",
                     "verified_by": user.get("id") if user.get("role") == "government" and user.get("verified") else "",
                     "raw_text": text_to_send, "risk_flag": risk_flag,
                 }
                 record.update(extracted)
+                record["item"] = item
+                record["qty"] = qty
                 record["district"] = district
                 if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                 st.session_state.demands.insert(0, record)
-                st.success(f"✅ 成功！已寫入一筆需求：{item} x {qty} (AI定位: {district})")
+                
+                msg_text = "災情通報" if "disaster" in info_type else f"需求：{item} x {qty}"
+                st.success(f"✅ 成功！已寫入一筆{msg_text} (AI定位: {district})")
             else:
+                # 供給邏輯不變
                 record = {
                     "id": make_id("S"), "time": now_str(), "source": "AI轉譯",
                     "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
-                    "resource_type": resource_type, "category": category, # 💡 寫入
-                    "lat": lat, "lon": lon, # 💡 寫入
+                    "resource_type": resource_type, "category": category,
+                    "lat": lat, "lon": lon, 
                     "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
                     "verified_by": user.get("id") if user.get("verified") else "", "raw_text": text_to_send, "risk_flag": risk_flag,
                 }
@@ -1604,7 +1621,6 @@ def page_multimodal():
                 if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                 st.session_state.supplies.insert(0, record)
                 st.success(f"✅ 成功！已寫入一筆供給：{item} x {qty} (AI定位: {district})")
-
 
 def page_chatbot():
     user = get_current_user()
@@ -1643,14 +1659,21 @@ def page_chatbot():
                     st.error(reply)
                     return
                     
+                info_type = result.get("info_type", "").lower()
                 extracted = result.get("data", result)
+                
+                # 💡 新增：處理無關閒聊
+                if "irrelevant" in info_type:
+                    reply = "⚠️ **系統提示**：我們無法從您的訊息中辨識出與災情或物資調度相關的內容。若是緊急求救，請具體說明『地點』與『現場狀況/所需物資』。"
+                    st.warning(reply)
+                    st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                    return
+                    
                 item = extracted.get("item", "")
                 qty = extracted.get("qty", 0)
                 risk_flag = extracted.get("risk_flag", "")
                 
-                # 💡 確保讀取資源類別與座標 (並加入防呆預設值)
                 resource_type = extracted.get("resource_type", "有形資源")
-                if resource_type not in ["有形資源", "無形資源", "金流資源"]: resource_type = "有形資源"
                 category = extracted.get("category", "未分類")
                 
                 try: lat = float(extracted.get("lat", 23.5))
@@ -1658,44 +1681,60 @@ def page_chatbot():
                 try: lon = float(extracted.get("lon", 121.0))
                 except: lon = 121.0
                 
+                district = extracted.get("district")
+                if not district or district in ["未知", "無", ""]:
+                    district = user.get("district", "全區")
+                
+                # 💡 新增：將純災情也視為一種 Demand 記錄下來，供地圖顯示
+                is_demand = "demand" in info_type or "disaster" in info_type
+                
                 if not item or item in ["未知", "無", ""]:
-                    reply = "⚠️ **通報失敗**：無法辨識具體的「物資品項」。請重新輸入，例如：『我需要 5 台抽水機』。"
-                elif qty <= 0:
+                    reply = "⚠️ **通報失敗**：無法辨識具體的狀況或品項。請重新輸入，例如：『我需要 5 台抽水機』或『這裡嚴重積水』。"
+                elif qty <= 0 and "disaster" not in info_type:
                     reply = "⚠️ **通報失敗**：無法辨識有效的「數量」。請明確告知數量。"
                 else:
-                    is_demand = "demand" in result.get("info_type", extracted.get("info_type", "")).lower()
-                    district = extracted.get("district")
-                    if not district or district in ["未知", "無", ""]:
-                        district = user.get("district", "全區")
-                    
                     if is_demand:
-                        dup_demand = check_duplicate_demand(district, item)
+                        if "disaster" in info_type:
+                            item = "純災情通報"
+                            qty = 1
+                            category = "災情回報"
+                            
+                        dup_demand = check_duplicate_demand(district, item) if "disaster" not in info_type else None
+                        
                         if dup_demand:
-                            reply = f"🚨 **系統提示 (發現相似通報)**：\n發現同區域已有一筆相似需求：【{dup_demand['id']} - {dup_demand['item']}】。系統已將您的通報列為緊急附議！"
+                            reply = f"🚨 **系統提示**：發現同區域已有相似需求：【{dup_demand['id']} - {dup_demand['item']}】。已將您的通報列為緊急附議！"
                             dup_demand["qty"] += qty
                             dup_demand["urgency"] = min(5, dup_demand.get("urgency", 3) + 1)
                         else:
                             record = {
                                 "id": make_id("D"), "time": now_str(), "source": "對話通報",
                                 "requester_id": user.get("id"), "requester_name": user.get("name"), "requester_email": user.get("email"),
-                                "resource_type": resource_type, "category": category, # 💡 寫入分類
-                                "lat": lat, "lon": lon, # 💡 寫入精準座標
+                                "resource_type": resource_type, "category": category,
+                                "lat": lat, "lon": lon, 
                                 "status": "未處理", "matched_provider": "", "verification_status": "pending", "verified_by": "", "raw_text": user_input, 
                                 "risk_flag": risk_flag,
                             }
                             record.update(extracted)
-                            record["district"] = district # 強制覆蓋確保正確
+                            record["item"] = item
+                            record["qty"] = qty
+                            record["district"] = district
                             if not record.get("village") or record.get("village") in ["未知", ""]: record["village"] = user.get("village", "全區")
                             
                             st.session_state.demands.insert(0, record)
-                            reply = f"✅ **立案成功**！已寫入需求池：{item} x {qty}\n*(AI 定位：{district})*"
+                            
+                            if "disaster" in info_type:
+                                reply = f"🚨 **災情已記錄**！系統已將您的通報標記於防災地圖上以供救援單位參考。\n*(AI 定位：{district})*"
+                            else:
+                                reply = f"✅ **立案成功**！已寫入需求池：{item} x {qty}\n*(AI 定位：{district})*"
+                                
                             if risk_flag: reply += f"\n\n*(🛡️ 系統已啟動 DLP 遮蔽敏感內容)*"
                     else:
+                        # Supply 邏輯保持不變
                         record = {
                             "id": make_id("S"), "time": now_str(), "source": "對話通報",
                             "provider_id": user.get("id"), "provider": extracted.get("provider") or user.get("name"), "provider_email": user.get("email"),
-                            "resource_type": resource_type, "category": category, # 💡 寫入分類
-                            "lat": lat, "lon": lon, # 💡 寫入精準座標
+                            "resource_type": resource_type, "category": category, 
+                            "lat": lat, "lon": lon, 
                             "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending", "risk_flag": risk_flag,
                         }
                         record.update(extracted)
@@ -1929,7 +1968,7 @@ def page_company_supply_center():
                     st.warning(reply)
                     st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
                 else:
-                    with st.spinner("🧠 AI 正在解析物資與倉儲地標..."):
+                   with st.spinner("🧠 AI 正在解析物資與倉儲地標..."):
                         result = extract_info_with_ai(raw_text=f"這是企業供給資訊，請以 Supply 解析，找出物資存放實際地標：{user_input}")
                         if result.get("error") == "API_RATE_LIMIT":
                             reply = "⚠️ AI 伺服器滿載，請改用「✍️ 手動備援表單」。"
@@ -1938,40 +1977,46 @@ def page_company_supply_center():
                             reply = f"❌ 解析錯誤 ({result['error']})。"
                             st.error(reply)
                         else:
-                            extracted = result.get("data", result)
-                            item = extracted.get("item", "")
-                            try: qty = int(extracted.get("qty", 0))
-                            except: qty = 0
-
-                            if not item or item in ["未知", "無", ""]:
-                                reply = "⚠️ 無法辨識「物資品項」，請重新輸入。例如：『可提供 500 箱礦泉水』"
-                            elif qty <= 0:
-                                reply = "⚠️ 無法辨識「數量」，請重新輸入。"
+                            info_type = result.get("info_type", "").lower()
+                            
+                            # 💡 阻擋企業發送無關訊息或純災情
+                            if "irrelevant" in info_type or "disaster" in info_type:
+                                reply = "⚠️ 系統無法從您的訊息中辨識出有效的『供給物資』。請具體說明可提供的品項與數量。"
                             else:
-                                resource_type = extracted.get("resource_type", "有形資源")
-                                if resource_type not in ["有形資源", "無形資源", "金流資源"]: resource_type = "有形資源"
-                                
-                                try: lat, lon = float(extracted.get("lat", 23.5)), float(extracted.get("lon", 121.0))
-                                except: lat, lon = 23.5, 121.0
-                                
-                                district = extracted.get("district")
-                                if not district or district in ["未知", "無", ""]: district = user.get("district", "全區")
-                                
-                                location_current = extracted.get("location_current") or extracted.get("location")
-                                if not location_current or location_current in ["未知", "無", ""]: location_current = district
+                                extracted = result.get("data", result)
+                                item = extracted.get("item", "")
+                                try: qty = int(extracted.get("qty", 0))
+                                except: qty = 0
+    
+                                if not item or item in ["未知", "無", ""]:
+                                    reply = "⚠️ 無法辨識「物資品項」，請重新輸入。例如：『可提供 500 箱礦泉水』"
+                                elif qty <= 0:
+                                    reply = "⚠️ 無法辨識「數量」，請重新輸入。"
+                                else:
+                                    resource_type = extracted.get("resource_type", "有形資源")
+                                    if resource_type not in ["有形資源", "無形資源", "金流資源"]: resource_type = "有形資源"
                                     
-                                record = {
-                                    "id": make_id("S"), "time": now_str(), "source": "AI 對話建檔",
-                                    "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
-                                    "resource_type": resource_type, "category": extracted.get("category", "未分類"),
-                                    "district": district, "village": "全區", "location_current": location_current,
-                                    "lat": lat, "lon": lon, "item": item, "qty": qty,
-                                    "has_logistics": extracted.get("has_logistics", "未註明"),
-                                    "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
-                                    "verified_by": user.get("id") if user.get("verified") else "", "raw_text": user_input, "risk_flag": extracted.get("risk_flag", ""),
-                                }
-                                st.session_state.supplies.insert(0, record)
-                                reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(倉儲：{record['location_current']} ｜ AI 定位：{district})*"
+                                    try: lat, lon = float(extracted.get("lat", 23.5)), float(extracted.get("lon", 121.0))
+                                    except: lat, lon = 23.5, 121.0
+                                    
+                                    district = extracted.get("district")
+                                    if not district or district in ["未知", "無", ""]: district = user.get("district", "全區")
+                                    
+                                    location_current = extracted.get("location_current") or extracted.get("location")
+                                    if not location_current or location_current in ["未知", "無", ""]: location_current = district
+                                        
+                                    record = {
+                                        "id": make_id("S"), "time": now_str(), "source": "AI 對話建檔",
+                                        "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
+                                        "resource_type": resource_type, "category": extracted.get("category", "未分類"),
+                                        "district": district, "village": "全區", "location_current": location_current,
+                                        "lat": lat, "lon": lon, "item": item, "qty": qty,
+                                        "has_logistics": extracted.get("has_logistics", "未註明"),
+                                        "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                                        "verified_by": user.get("id") if user.get("verified") else "", "raw_text": user_input, "risk_flag": extracted.get("risk_flag", ""),
+                                    }
+                                    st.session_state.supplies.insert(0, record)
+                                    reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(倉儲：{record['location_current']} ｜ AI 定位：{district})*"
                                 
                     if "reply" in locals():
                         st.markdown(reply)
