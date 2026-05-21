@@ -1896,27 +1896,319 @@ def page_company_supply_chatbot():
                 st.rerun()
 
 
-def page_company_supply_claim_center():
-    st.title("📦 供給與認領中心")
-    st.caption("整合公司/團體最常用的供給建立、供給管理、需求認領與申請追蹤。")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "AI 供給登錄",
-        "建立供給",
-        "我提供的供給",
-        "我要認領需求",
-        "我的認領申請",
-    ])
+def page_company_supply_center():
+    user = get_current_user()
+    st.title("📦 企業供給中心 (AI 優先)")
+    st.caption("透過 AI 快速建立您的物資供給，或管理既有庫存。")
+    
+    # 💡 四大核心 Tab 整合
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 AI 對話建檔", "📄 ERP 批次匯入", "✍️ 手動備援表單", "📋 我的供給庫存"])
+    
+    # ==========================================
+    # Tab 1: AI 對話建檔
+    # ==========================================
     with tab1:
-        page_company_supply_chatbot()
-    with tab2:
-        page_submit_supply()
-    with tab3:
-        page_my_supplies()
-    with tab4:
-        page_public_claims()
-    with tab5:
-        page_my_claims()
+        st.info("💡 提示：請直接描述可提供的物資與存放地點。例如：『我們統一企業在林口物流中心有 500 箱礦泉水可提供，自有車隊可送。』")
+        if "comp_supply_chat" not in st.session_state:
+            st.session_state.comp_supply_chat = []
+            
+        for msg in st.session_state.comp_supply_chat:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                
+        if user_input := st.chat_input("輸入範例：台南永康倉庫可提供 500 箱礦泉水..."):
+            st.session_state.comp_supply_chat.append({"role": "user", "content": user_input})
+            with st.chat_message("user"): st.markdown(user_input)
+                
+            with st.chat_message("assistant"):
+                demand_keywords = ["需要", "急需", "需求", "求助", "缺", "救援", "幫我找"]
+                supply_keywords = ["提供", "可提供", "捐贈", "供給", "支援", "可支援", "可調派", "庫存", "倉庫", "倉"]
 
+                if any(k in user_input for k in demand_keywords) and not any(k in user_input for k in supply_keywords):
+                    reply = "⚠️ 此區僅供建立『供給』。若要協助災區，請切換至上方的「🤝 企業認領中心」。"
+                    st.warning(reply)
+                    st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
+                else:
+                    with st.spinner("🧠 AI 正在解析物資與倉儲地標..."):
+                        result = extract_info_with_ai(raw_text=f"這是企業供給資訊，請以 Supply 解析，找出物資存放實際地標：{user_input}")
+                        if result.get("error") == "API_RATE_LIMIT":
+                            reply = "⚠️ AI 伺服器滿載，請改用「✍️ 手動備援表單」。"
+                            st.warning(reply)
+                        elif "error" in result:
+                            reply = f"❌ 解析錯誤 ({result['error']})。"
+                            st.error(reply)
+                        else:
+                            extracted = result.get("data", result)
+                            item = extracted.get("item", "")
+                            try: qty = int(extracted.get("qty", 0))
+                            except: qty = 0
+
+                            if not item or item in ["未知", "無", ""]:
+                                reply = "⚠️ 無法辨識「物資品項」，請重新輸入。例如：『可提供 500 箱礦泉水』"
+                            elif qty <= 0:
+                                reply = "⚠️ 無法辨識「數量」，請重新輸入。"
+                            else:
+                                resource_type = extracted.get("resource_type", "有形資源")
+                                if resource_type not in ["有形資源", "無形資源", "金流資源"]: resource_type = "有形資源"
+                                
+                                try: lat, lon = float(extracted.get("lat", 23.5)), float(extracted.get("lon", 121.0))
+                                except: lat, lon = 23.5, 121.0
+                                
+                                district = extracted.get("district")
+                                if not district or district in ["未知", "無", ""]: district = user.get("district", "全區")
+                                
+                                location_current = extracted.get("location_current") or extracted.get("location")
+                                if not location_current or location_current in ["未知", "無", ""]: location_current = district
+                                    
+                                record = {
+                                    "id": make_id("S"), "time": now_str(), "source": "AI 對話建檔",
+                                    "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
+                                    "resource_type": resource_type, "category": extracted.get("category", "未分類"),
+                                    "district": district, "village": "全區", "location_current": location_current,
+                                    "lat": lat, "lon": lon, "item": item, "qty": qty,
+                                    "has_logistics": extracted.get("has_logistics", "未註明"),
+                                    "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                                    "verified_by": user.get("id") if user.get("verified") else "", "raw_text": user_input, "risk_flag": extracted.get("risk_flag", ""),
+                                }
+                                st.session_state.supplies.insert(0, record)
+                                reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(倉儲：{record['location_current']} ｜ AI 定位：{district})*"
+                                
+                    if "reply" in locals():
+                        st.markdown(reply)
+                        st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
+
+    # ==========================================
+    # Tab 2: ERP 批次匯入
+    # ==========================================
+    with tab2:
+        st.write("將庫存盤點清單貼於下方，AI 將自動拆解並預估座標。")
+        bulk_text = st.text_area("📄 貼上庫存盤點清單", height=150, placeholder="範例：林口倉目前有 500箱泡麵，自有車隊可送。", key="comp_bulk_text")
+        
+        if st.button("🧠 啟動批次解析", type="primary", key="comp_bulk_btn"):
+            if not bulk_text.strip(): st.error("請貼上清單內容！")
+            else:
+                with st.spinner("AI 正在處理批次資料..."):
+                    prompt = f"""請萃取物資庫存。嚴格以 JSON 陣列回傳：
+                    [ {{"item": "品項", "qty": 數量, "location_current": "存放地", "has_logistics": "可自行運送 或 需車隊協助", "lat": 緯度浮點, "lon": 經度浮點, "district": "台灣行政區(如:新北市林口區)", "resource_type": "有形資源"}} ]
+                    文字：{bulk_text}"""
+                    try:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        raw_output = res.choices[0].message.content
+                        start_idx, end_idx = raw_output.find("["), raw_output.rfind("]")
+                        if start_idx != -1 and end_idx != -1:
+                            st.session_state.preview_supplies = json.loads(raw_output[start_idx:end_idx+1])
+                            st.session_state.bulk_text_cache = bulk_text
+                            st.success("✅ 解析成功！請在下方確認。")
+                        else:
+                            st.error("❌ 解析失敗，請確認內容格式。")
+                    except Exception as e:
+                        st.error(f"系統錯誤：{str(e)}")
+
+        if st.session_state.get("preview_supplies"):
+            df_preview = pd.DataFrame(st.session_state.preview_supplies)
+            edited_df = st.data_editor(df_preview, num_rows="dynamic", use_container_width=True, key="comp_bulk_editor")
+            if st.button("✅ 確認無誤，正式入庫", type="primary", key="comp_bulk_confirm"):
+                for _, row in edited_df.iterrows():
+                    try: row_lat, row_lon, row_qty = float(row.get("lat", 23.5)), float(row.get("lon", 121.0)), int(row.get("qty", 1))
+                    except: row_lat, row_lon, row_qty = 23.5, 121.0, 1
+                    supply = {
+                        "id": make_id("S"), "time": now_str(), "source": "ERP批次匯入",
+                        "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
+                        "district": row.get("district", user.get("district")), "village": "全區",
+                        "location_current": row.get("location_current", user.get("district")), 
+                        "lat": row_lat, "lon": row_lon, "resource_type": row.get("resource_type", "有形資源"), "category": "批次匯入", 
+                        "item": row.get("item"), "qty": row_qty, "has_logistics": row.get("has_logistics", "需車隊協助"),
+                        "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                        "verified_by": user.get("id") if user.get("verified") else "", "raw_text": st.session_state.get("bulk_text_cache", ""), "risk_flag": "",
+                    }
+                    st.session_state.supplies.insert(0, supply)
+                st.session_state.preview_supplies = None
+                st.success(f"✅ 成功入庫 {len(edited_df)} 筆物資！")
+                time.sleep(1.5); st.rerun()
+
+    # ==========================================
+    # Tab 3: 手動備援表單
+    # ==========================================
+    with tab3:
+        st.write("若 AI 伺服器異常，可使用此傳統表單手動建檔。")
+        with st.form("comp_supply_manual_form"):
+            col_b, col_c = st.columns(2)
+            with col_b: location_current = st.text_input("📍 物資實際存放地", placeholder="例如：花蓮車站...", key="c_man_loc")
+            with col_c: has_logistics = st.radio("🚚 物流配送能力", ["✅ 自有車隊", "❌ 需車隊協助"], key="c_man_log")
+            
+            col_d, col_e, col_f = st.columns([1.5, 2, 1])
+            with col_d: resource_type, category = resource_selectors("supply")
+            with col_e: item = st.text_input("📦 可提供品項", key="c_man_item")
+            with col_f: qty = st.number_input("🔢 數量", min_value=1, value=1, key="c_man_qty")
+                
+            submitted = st.form_submit_button("🚀 建立供給", type="primary")
+
+        if submitted:
+            if not item.strip() or not location_current.strip():
+                st.error("❌ 『物資存放地點』與『品項』為必填。")
+            else:
+                with st.spinner("定位中..."):
+                    ai_geo_result = extract_info_with_ai(raw_text=f"請解析此地標行政區與經緯度：{location_current}")
+                    geo_data = ai_geo_result.get("data", ai_geo_result)
+                    district = geo_data.get("district")
+                    if not district or district in ["未知", "無", ""]: district = user.get("district", "全區")
+
+                supply = {
+                    "id": make_id("S"), "time": now_str(), "source": "手動備援表單",
+                    "provider_id": user.get("id"), "provider": user.get("name"), "provider_email": user.get("email"),
+                    "district": district, "village": "全區", "location_current": location_current,
+                    "lat": geo_data.get("lat", 23.8), "lon": geo_data.get("lon", 121.0),
+                    "resource_type": resource_type, "category": category, "item": item, "qty": int(qty),
+                    "has_logistics": "可自行運送" if "✅" in has_logistics else "需車隊協助",
+                    "status": "可調派", "verification_status": "verified" if user.get("verified") else "pending",
+                    "verified_by": user.get("id") if user.get("verified") else "", "raw_text": "", "risk_flag": geo_data.get("risk_flag", ""),
+                }
+                st.session_state.supplies.insert(0, supply)
+                st.success(f"✅ 單筆供給已建立！")
+
+    # ==========================================
+    # Tab 4: 供給庫存清單
+    # ==========================================
+    with tab4:
+        my_supplies = [s for s in st.session_state.supplies if s.get("provider_id") == user.get("id")]
+        if my_supplies:
+            st.dataframe(
+                pd.DataFrame(my_supplies)[["id", "time", "location_current", "item", "qty", "has_logistics", "status"]],
+                column_config={"id": "編號", "time": "登錄時間", "location_current": "存放地", "item": "品項", "qty": "數量", "status": "狀態"},
+                hide_index=True, use_container_width=True
+            )
+        else:
+            st.info("目前尚無供給紀錄。")
+
+def page_company_claim_center():
+    user = get_current_user()
+    st.title("🤝 企業認領中心 (AI 優先)")
+    st.caption("使用 AI 快速尋找符合貴單位物資能量的災情需求，並追蹤配對進度。")
+    
+    tab1, tab2, tab3 = st.tabs(["🤖 AI 需求尋找助理", "🔍 手動瀏覽公開需求", "⏳ 我的認領進度"])
+    
+    # ==========================================
+    # Tab 1: AI 需求尋找助理 (NLP Search)
+    # ==========================================
+    with tab1:
+        st.info("💡 提示：您可以直接詢問 AI 想尋找的需求。例如：『幫我找花蓮地區缺抽水機的災區』或『哪裡最缺飲用水？』")
+        
+        search_query = st.text_input("🔍 對話式搜尋需求：", placeholder="例如：幫我找花蓮缺水或缺帳篷的災區")
+        if st.button("🧠 AI 智能檢索", type="primary"):
+            if not search_query:
+                st.warning("請輸入搜尋條件。")
+            else:
+                with st.spinner("AI 正在分析您的條件並比對全國災情庫..."):
+                    # 簡易 AI 意圖過濾 (Hackathon MVP)
+                    prompt = f"請從使用者的搜尋『{search_query}』中，萃取出他想找的『地區(district)』與『物資關鍵字(item)』。回傳 JSON，若無則填空字串。格式：{{\"district\": \"\", \"item\": \"\"}}"
+                    try:
+                        from openai import OpenAI
+                        client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+                        res = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.0)
+                        raw_output = res.choices[0].message.content
+                        start_idx, end_idx = raw_output.find("{"), raw_output.rfind("}")
+                        filter_cond = json.loads(raw_output[start_idx:end_idx+1]) if start_idx != -1 else {"district": "", "item": ""}
+                    except:
+                        filter_cond = {"district": "", "item": search_query} # 降級處理
+                        
+                    # 本地過濾
+                    target_district = filter_cond.get("district", "")
+                    target_item = filter_cond.get("item", "")
+                    
+                    matched_demands = []
+                    for d in st.session_state.demands:
+                        if d.get("verification_status") != "verified" or d.get("status") not in ["未處理", "部分配對 (尚缺)"]:
+                            continue
+                        
+                        match = True
+                        if target_district and target_district not in d.get("district", ""): match = False
+                        if target_item and target_item not in d.get("item", "") and target_item not in d.get("raw_text", ""): match = False
+                        if match: matched_demands.append(d)
+                        
+                    st.success(f"✅ AI 檢索完成！為您找到 {len(matched_demands)} 筆符合【{target_district} / {target_item}】的需求。")
+                    
+                    if matched_demands:
+                        for d in matched_demands:
+                            with st.container(border=True):
+                                col_a, col_b = st.columns([3, 1])
+                                with col_a:
+                                    st.markdown(f"#### {d['item']} (需 {d['qty']} 單位)")
+                                    st.write(f"📍 {d['location']} | 🚨 緊急度: {d.get('urgency',3)}⭐ | {get_status_badge(d['status'])}", unsafe_allow_html=True)
+                                with col_b:
+                                    st.write("")
+                                    if st.button("我要認領", key=f"ai_claim_btn_{d['id']}", use_container_width=True):
+                                        st.session_state.claiming_demand_id = d["id"]
+                                        st.rerun()
+
+    # ==========================================
+    # Tab 2: 手動瀏覽與認領
+    # ==========================================
+    with tab2:
+        public_demands = [d for d in st.session_state.demands if d.get("verification_status") == "verified" and d.get("status") in ["未處理", "部分配對 (尚缺)"]]
+        if not public_demands:
+            st.info("目前沒有待處理的公開需求。")
+        else:
+            for d in public_demands:
+                with st.container(border=True):
+                    col_c, col_d = st.columns([3, 1])
+                    with col_c:
+                        st.markdown(f"**{d['item']} (需 {d['qty']} 單位)**")
+                        st.caption(f"📍 {d['location']} | 🚨 {d.get('urgency',3)}⭐")
+                    with col_d:
+                        if st.button("我要認領", key=f"man_claim_btn_{d['id']}", use_container_width=True):
+                            st.session_state.claiming_demand_id = d["id"]
+                            st.rerun()
+
+    # ==========================================
+    # 處理彈出的認領表單 (共用於 Tab1 & Tab2)
+    # ==========================================
+    if st.session_state.get("claiming_demand_id"):
+        d_id = st.session_state.claiming_demand_id
+        target_d = next((x for x in st.session_state.demands if x["id"] == d_id), None)
+        if target_d:
+            st.markdown("---")
+            st.subheader(f"✅ 確認認領：{target_d['item']}")
+            my_avail_supplies = [s for s in st.session_state.supplies if s.get("provider_id") == user.get("id") and s.get("status") == "可調派"]
+            
+            if not my_avail_supplies:
+                st.error("您目前沒有『可調派』的庫存供給！請先至【📦 企業供給中心】建立您的物資庫存。")
+                if st.button("取消"):
+                    st.session_state.claiming_demand_id = None; st.rerun()
+            else:
+                supply_options = {s["id"]: f"{s['item']} (餘裕: {s['qty']}) - {s['location_current']}" for s in my_avail_supplies}
+                
+                with st.form("comp_claim_form"):
+                    sel_supply_id = st.selectbox("請選擇您要使用哪一筆庫存來支援？", list(supply_options.keys()), format_func=lambda x: supply_options[x])
+                    sel_supply = next((x for x in my_avail_supplies if x["id"] == sel_supply_id), None)
+                    max_q = min(target_d.get("qty", 1), sel_supply.get("qty", 1)) if sel_supply else 1
+                    
+                    claim_qty = st.number_input("認領數量", min_value=1, max_value=max_q, value=max_q)
+                    submit_claim = st.form_submit_button("🚀 送出認領申請", type="primary")
+                    
+                    if submit_claim:
+                        c_id = make_id("C")
+                        claim = {
+                            "id": c_id, "time": now_str(), "demand_id": target_d["id"], "supply_id": sel_supply_id,
+                            "claimant_id": user.get("id"), "claimant_name": user.get("name"), "claim_qty": claim_qty,
+                            "status": "pending_gov_review", "match_score": 85, "match_reason": "企業主動認領"
+                        }
+                        st.session_state.claims.append(claim)
+                        st.session_state.claiming_demand_id = None
+                        st.success("✅ 認領申請已送出！待政府審核通過後即可出貨。")
+                        time.sleep(1.5); st.rerun()
+
+    # ==========================================
+    # Tab 3: 我的認領進度
+    # ==========================================
+    with tab3:
+        my_claims = [c for c in st.session_state.claims if c.get("claimant_id") == user.get("id")]
+        if my_claims:
+            df = pd.DataFrame(my_claims)
+            st.dataframe(df[["id", "time", "demand_id", "claim_qty", "status"]], hide_index=True, use_container_width=True)
+        else:
+            st.info("目前尚無認領申請紀錄。")
 
 def page_company_logistics_esg_center():
     st.title("🚚 配對物流與 ESG")
@@ -2820,7 +3112,7 @@ def page_system_settings():
     st.write("手機 OTP：Demo 版只顯示在註冊當下畫面，不進入全站通知中心；正式版可串接 SMS API，OTP 5 分鐘有效。")
 
 # =========================================================
-# 7. Main App
+# 7. Main App 與 路由控制
 # =========================================================
 st.set_page_config(page_title="ResQ-Link 可信任災害資源分配平台", layout="wide", page_icon="🧩")
 init_session_state()
@@ -2829,46 +3121,66 @@ if not is_logged_in():
     login_panel()
     st.stop()
 
-sidebar_layout()
 user = get_current_user()
 role = user.get("role")
 
-role_pages = {
-    "citizen": [
-        "💬 智慧對話通報", "🗺️ 災情與資源地圖", "🤝 協助與認領", "📌 我的紀錄", "👤 個人設定與表單"
-    ],
-    "company": [
-        "📊 公司總覽",
-        "💬 AI供給登錄",
-        "📦 供給與認領中心",
-        "🚚 配對物流與 ESG",
-        "🗺️ 公開資源池",
-        "👤 個人設定",
-    ],
-    # 💡 政府介面大瘦身：留下最精華的決策與協作功能
-    "government": [
-        "📥 戰情收件匣",         # 取代舊有儀表板
-        "🤖 AI 指揮官助理",      # 核心亮點！
-        "✅ 需求與認領審核",     # 保留你上一階段優化過的批次審核+地圖
-        "🗺️ 災情與資源地圖",     # 掌握全局空間
-        "🚚 配對與物流管理",     # 出貨與結案
-        "👤 個人設定與表單"      # 收納備用表單與設定
-    ],
-    "admin": [
-        "📈 系統總覽", "🛡️ 管理員總控台"
-    ],
-}
+# =========================================================
+# 側邊欄 UI：身分卡片與功能選單
+# =========================================================
+with st.sidebar:
+    # 💡 UI 升級：側邊欄使用者狀態卡片
+    if role:
+        st.markdown(f"""
+        <div style="padding: 15px; border-radius: 10px; background-color: #f0f2f6; margin-bottom: 20px;">
+            <h4 style="margin:0; color: #31333F;">👤 {user.get('name', '未登入')}</h4>
+            <p style="margin:0; font-size: 14px; color: #5c5c5c; line-height: 1.5;">
+                🏷️ 角色：{ROLE_LABELS.get(user.get('role'), '未知')}<br>
+                📍 轄區：{user.get('district', '全區')}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""<div style="padding: 15px; border-radius: 10px; background-color: #f0f2f6; margin-bottom: 20px;"><h4 style="margin:0; color: #31333F;">請先登入</h4></div>""", unsafe_allow_html=True)
+        
+    st.divider()
 
-page = st.sidebar.radio("功能選單", role_pages.get(role, ["📊 儀表板"]))
+    # 💡 選單結構大洗牌：聚焦與精簡
+    role_pages = {
+        "citizen": [
+            "💬 智慧對話通報", "🗺️ 災情與資源地圖", "🤝 協助與認領", "📌 我的紀錄", "👤 個人設定與表單"
+        ],
+        "company": [
+            "📊 公司總覽",
+            "📦 提供供給 (AI 優先)",   # 💡 整合版企業供給中心
+            "🤝 認領需求 (AI 優先)",   # 💡 整合版企業認領中心
+            "🚚 配對物流與 ESG",       # 💡 整合物流與公關報告
+            "🗺️ 公開資源池",
+            "👤 個人設定",
+        ],
+        "government": [
+            "📥 戰情收件匣",         # 取代舊有儀表板
+            "🤖 AI 指揮官助理",      # 核心亮點！
+            "✅ 需求與認領審核",     # 保留批次審核+地圖
+            "🗺️ 災情與資源地圖",     # 掌握全局空間
+            "🚚 配對與物流管理",     # 出貨與結案
+            "👤 個人設定與表單"      # 收納備用表單與設定
+        ],
+        "admin": [
+            "📈 系統總覽", "🛡️ 管理員總控台"
+        ],
+    }
+
+    page = st.radio("功能選單", role_pages.get(role, ["📊 儀表板"]))
+
 
 # =========================================================
-# 路由綁定 (將新舊功能連接)
+# 路由綁定 (將功能名稱映射至對應函數)
 # =========================================================
 if page in ["💬 智慧對話通報", "💬 對話通報"]:
     page_chatbot()
-elif page == "🤖 AI 指揮官助理":    # 💡 綁定政府新 AI 助理
+elif page == "🤖 AI 指揮官助理":    
     page_gov_chatbot()
-elif page == "📥 戰情收件匣":       # 💡 綁定政府新首頁
+elif page == "📥 戰情收件匣":       
     page_gov_inbox()
 elif page in ["🏠 首頁", "📊 儀表板", "📊 公司總覽"]:
     page_role_dashboard()
@@ -2882,13 +3194,25 @@ elif page == "📌 我的紀錄":
     with tab1: page_my_demands()
     with tab2: page_my_supplies()
     with tab3: page_my_claims()
-elif page == "👤 個人設定與表單":
+    
+# 💡 企業的兩大核心全新頁面對接
+elif page == "📦 提供供給 (AI 優先)":
+    page_company_supply_center()
+elif page == "🤝 認領需求 (AI 優先)":
+    page_company_claim_center()
+elif page == "🚚 配對物流與 ESG":
+    st.title("🚚 配對物流與 ESG 影響力")
+    tabA, tabB = st.tabs(["🚚 物流出貨追蹤", "📈 企業 ESG 影響力報告"])
+    with tabA: page_matched_orders()
+    with tabB: page_esg_dashboard()
+    
+# 設定與表單路由
+elif page in ["👤 個人設定與表單", "👤 個人設定"]:
     st.title("👤 設定與備用表單")
     if role == "company":
-        tabs = st.tabs(["個人資料", "通知紀錄", "填寫供給表單"])
+        tabs = st.tabs(["個人資料", "通知紀錄"])
         with tabs[0]: page_profile()
         with tabs[1]: st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
-        with tabs[2]: page_submit_supply()
     elif role in ["government", "citizen"]:
         tabs = st.tabs(["個人資料", "通知紀錄", "填寫需求表單", "填寫供給表單"])
         with tabs[0]: page_profile()
@@ -2900,23 +3224,14 @@ elif page == "👤 個人設定與表單":
         with tabs[0]: page_profile()
         with tabs[1]: st.dataframe(pd.DataFrame(st.session_state.notifications), hide_index=True, use_container_width=True)
 
-elif page == "💬 AI供給登錄":
-    page_company_supply_chatbot()
-elif page == "📦 供給與認領中心":
-    page_company_supply_claim_center()
-elif page == "🚚 配對物流與 ESG":
-    page_company_logistics_esg_center()
-elif page == "👤 個人設定":
-    page_profile()
-
-# 以下保留給企業與管理員的專屬功能
+# 以下保留給管理員或共用審核的專屬功能
 elif page in ["📦 建立供給(含批次)", "📦 建立供給"]:
     page_submit_supply()
 elif page == "📦 我提供的供給":
     page_my_supplies()
 elif page == "📋 我的認領申請":
     page_my_claims()
-elif page in ["✅ 需求審核", "📋 認領申請審核", "✅ 需求與認領審核"]: # 💡 對接政府的審核頁面
+elif page in ["✅ 需求審核", "📋 認領申請審核", "✅ 需求與認領審核"]:
     page_gov_review()
 elif page in ["🪪 認證管理", "🧾 帳號審核管理", "📌 需求管理", "📦 供給管理", "📋 認領申請總審核", "🔔 通知與Email紀錄", "📜 稽核紀錄", "🛡️ 管理員總控台"]:
     page_admin()
