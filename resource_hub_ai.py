@@ -855,7 +855,7 @@ def login_panel():
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ==========================================
-    # 三個大型身分區塊
+    # 三個大型身分區塊 (點擊即切換表單)
     # ==========================================
     col1, col2, col3 = st.columns(3)
     
@@ -883,22 +883,22 @@ def login_panel():
     st.divider()
 
     # ==========================================
-    # 依據點擊區塊，展開對應登入表單與狀態回饋
+    # 各角色登入表單 (皆已配置預設值 value)
     # ==========================================
     current_role = st.session_state.selected_login_role
 
     if current_role == "citizen":
-        # --------- 民眾登入區 ---------
+        # --------- 民眾登入區 (已預設陳大同) ---------
         with st.container(border=True):
-            st.subheader("👨‍👩‍👧‍👦 民眾登入/註冊")
+            st.subheader("👨‍👩‍👧‍👦 民眾登入/註冊 (Demo 範例已填妥)")
             with st.form("citizen_login_form"):
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    login_email = st.text_input("📧 電子信箱", placeholder="example@gmail.com")
-                    login_name = st.text_input("👤 姓名/暱稱", placeholder="王大明")
+                    login_email = st.text_input("📧 電子信箱", value="citizen@resq.tw")
+                    login_name = st.text_input("👤 姓名/暱稱", value="陳大同")
                 with col_b:
-                    login_district = st.text_input("📍 所在鄉鎮市區", placeholder="花蓮縣壽豐鄉", help="用於緊急事件預設定位")
-                    login_village = st.text_input("🏘️ 所在村里 (選填)", placeholder="志學村")
+                    login_district = st.text_input("📍 所在鄉鎮市區", value="花蓮縣壽豐鄉", help="用於緊急事件預設定位")
+                    login_village = st.text_input("🏘️ 所在村里 (選填)", value="志學村")
                     
                 submitted = st.form_submit_button("🚀 登入系統", type="primary", use_container_width=True)
                 
@@ -918,29 +918,26 @@ def login_panel():
                         st.session_state.current_user = user
                         st.session_state.logged_in = True
                         
-                        # 💡 新增：狀態回饋與停留
-                        if is_new_user:
-                            st.success("🎉 新帳號註冊成功！正在為您導向系統...")
-                        else:
-                            st.success(f"✅ 登入成功！歡迎回來，{login_name}。")
+                        if is_new_user: st.success("🎉 新帳號註冊成功！正在為您導向系統...")
+                        else: st.success(f"✅ 登入成功！歡迎回來，{login_name}。")
                         
-                        time.sleep(1.2) # 讓使用者有時間看見回饋
+                        time.sleep(1.2)
                         st.rerun()
                     else:
                         st.error("❌ 信箱、姓名、所在鄉鎮市區為必填欄位。")
 
     elif current_role == "company":
-        # --------- 企業登入區 ---------
+        # --------- 企業登入區 (已預設臺灣食品企業 + 通過驗證統編) ---------
         with st.container(border=True):
-            st.subheader("🏢 企業/組織 登入")
+            st.subheader("🏢 企業/組織 登入 (Demo 範例已填妥)")
             with st.form("company_login_form"):
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    login_email = st.text_input("📧 企業聯絡信箱", placeholder="contact@company.com.tw")
-                    login_name = st.text_input("🏢 企業/組織名稱", placeholder="統一企業")
+                    login_email = st.text_input("📧 企業聯絡信箱", value="contact@taiwanfood.com.tw")
+                    login_name = st.text_input("🏢 企業/組織名稱", value="臺灣食品企業")
                 with col_b:
-                    login_district = st.text_input("📍 總部所在鄉鎮市區", placeholder="台南市永康區")
-                    tax_id = st.text_input("🧾 統一編號 (用於官方認證)", placeholder="12345678", max_chars=8)
+                    login_district = st.text_input("📍 總部所在鄉鎮市區", value="臺南市永康區")
+                    tax_id = st.text_input("🧾 統一編號 (用於官方認證)", value="12345678", max_chars=8)
                 
                 st.info("🔒 登入即同意平台存取您的 ESG 貢獻紀錄。")
                 submitted = st.form_submit_button("🚀 登入企業戰情中心", type="primary", use_container_width=True)
@@ -949,7 +946,7 @@ def login_panel():
                     if login_email.strip() and login_name.strip() and login_district.strip():
                         user = next((u for u in st.session_state.users if u["email"] == login_email), None)
                         is_new_user = False
-                        is_verified = bool(tax_id.strip() == "12345678") # Demo: 輸入特定統編即認證
+                        is_verified = bool(tax_id.strip() == "12345678")
                         
                         if not user:
                             is_new_user = True
@@ -963,31 +960,30 @@ def login_panel():
                         st.session_state.current_user = user
                         st.session_state.logged_in = True
                         
-                        # 💡 新增：狀態回饋與停留
                         if is_new_user and is_verified:
-                            st.success(f"🎉 企業帳號註冊成功！系統已透過統編驗證您的【官方身分】。")
+                            st.success(f"🎉 企業帳號註冊成功！系統已透過統編驗證您的【官方信任身分】。")
                         elif is_new_user and not is_verified:
-                            st.warning(f"⏳ 企業帳號註冊成功！目前狀態為【等待驗證】，部分功能將受限。")
+                            st.warning(f"⏳ 企業帳號註冊成功！目前狀態為【等待驗證】。")
                         else:
                             st.success(f"✅ 登入成功！進入企業戰情中心。")
                             
-                        time.sleep(1.5)
+                        time.sleep(1.2)
                         st.rerun()
                     else:
                         st.error("❌ 信箱、企業名稱、所在區為必填。")
 
     elif current_role == "government":
-        # --------- 政府登入區 ---------
+        # --------- 政府登入區 (已預設林應變指揮官 + 通過授權碼) ---------
         with st.container(border=True):
-            st.subheader("🏛️ 政府指揮官/村里長 登入")
+            st.subheader("🏛️ 政府指揮官/村里長 登入 (Demo 範例已填妥)")
             with st.form("gov_login_form"):
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    login_email = st.text_input("📧 公務信箱", placeholder="admin@gov.tw")
-                    login_name = st.text_input("👤 長官姓名/職稱", placeholder="林指揮官")
+                    login_email = st.text_input("📧 公務信箱", value="commander@gov.tw")
+                    login_name = st.text_input("👤 長官姓名/職稱", value="林應變指揮官")
                 with col_b:
-                    login_district = st.text_input("📍 管轄鄉鎮市區", placeholder="花蓮縣壽豐鄉 (或填『全區』)")
-                    auth_code = st.text_input("🔑 公務授權碼", type="password", placeholder="請輸入 admin")
+                    login_district = st.text_input("📍 管轄鄉鎮市區", value="花蓮縣壽豐鄉")
+                    auth_code = st.text_input("🔑 公務授權碼", type="password", value="admin")
                 
                 submitted = st.form_submit_button("🛡️ 進入指揮中心", type="primary", use_container_width=True)
                 
@@ -1005,37 +1001,40 @@ def login_panel():
                         st.session_state.current_user = user
                         st.session_state.logged_in = True
                         
-                        # 💡 新增：狀態回饋與停留
                         st.success(f"✅ 授權成功！長官好，正在為您開啟指揮中心...")
                         time.sleep(1.2)
                         st.rerun()
                     else:
                         st.error("❌ 授權碼錯誤！(Demo 請輸入 admin)")
     
-    # --------- 隱藏管理員通道 ---------
+    # --------- 系統管理員通道 (已預設最高權限核心帳密) ---------
     if not current_role:
         st.markdown("<br><br><br>", unsafe_allow_html=True)
         col_x, col_y, col_z = st.columns([1,1,1])
         with col_y:
-            if st.button("⚙️ 系統管理員登入", key="btn_role_admin", use_container_width=True):
+            if st.button("⚙️ 系統管理員登入通道", key="btn_role_admin", use_container_width=True):
                 st.session_state.selected_login_role = "admin"
                 st.rerun()
                 
     elif current_role == "admin":
         with st.container(border=True):
-            st.subheader("⚙️ 系統管理員 登入")
+            st.subheader("⚙️ 系統管理員 登入 (Demo 範例已填妥)")
             with st.form("admin_login_form"):
                 login_email = st.text_input("📧 管理員帳號", value="sysadmin@resq.tw")
-                auth_code = st.text_input("🔑 密碼", type="password")
+                auth_code = st.text_input("🔑 密碼", type="password", value="admin")
                 submitted = st.form_submit_button("登入管理後台", type="primary", use_container_width=True)
+                
                 if submitted:
-                    user = {"id": "A001", "email": login_email, "name": "系統管理員", "role": "admin", "district": "全區", "village": "全區", "verified": True}
-                    st.session_state.current_user = user
-                    st.session_state.logged_in = True
-                    
-                    st.success("✅ 認證通過，登入管理後台...")
-                    time.sleep(1.0)
-                    st.rerun()
+                    if auth_code == "admin":
+                        user = {"id": "A001", "email": login_email, "name": "系統管理員", "role": "admin", "district": "全區", "village": "全區", "verified": True}
+                        st.session_state.current_user = user
+                        st.session_state.logged_in = True
+                        
+                        st.success("✅ 認證通過，成功登入系統最高管理後台...")
+                        time.sleep(1.0)
+                        st.rerun()
+                    else:
+                        st.error("❌ 管理員密碼密鑰錯誤！")
 
 def sidebar_layout():
     user = get_current_user()
