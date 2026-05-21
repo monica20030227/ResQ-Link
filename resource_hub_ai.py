@@ -2056,56 +2056,226 @@ def page_gov_inbox():
 def page_gov_chatbot():
     user = get_current_user()
     st.title("🤖 AI 指揮官助理")
-    st.caption("透過自然語言，直接命令系統完成「批次核准」、「資源搜尋」與「情資總結」。")
+    st.caption("可用自然語言完成：批次核准、資源搜尋、災情總結、提出需求、建立供給。")
 
-    # 初始化長官專屬對話紀錄
+    st.info("""
+輸入範例：
+- 幫我處理今日需求
+- 尋找附近可用的抽水機
+- 總結目前的災情狀況
+- 新增需求：花蓮縣壽豐鄉中山路淹水，急需 5 台抽水機，緊急度 5
+- 新增供給：花蓮市區有 3 台抽水機可支援，提供者是吉普車救援隊
+""")
+
     if "gov_chat" not in st.session_state:
-        st.session_state.gov_chat = [{"role": "assistant", "content": f"長官您好！我是您的 AI 戰情助理。目前系統已啟動自動防禦與分流。\n您可以隨時對我說：\n- 『**幫我處理今日需求**』\n- 『**尋找附近可用的抽水機**』\n- 『**總結目前的災情狀況**』"}]
+        st.session_state.gov_chat = [
+            {
+                "role": "assistant",
+                "content": """長官您好！我是您的 AI 戰情助理。
 
-    # 顯示對話歷史
+您可以直接輸入：
+- 「新增需求：地點 + 物資 + 數量」
+- 「新增供給：地點 + 物資 + 數量」
+- 「幫我處理今日需求」
+- 「尋找附近可用的抽水機」
+- 「總結目前的災情狀況」
+""",
+            }
+        ]
+
     for msg in st.session_state.gov_chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # 捕捉使用者輸入
-    if user_input := st.chat_input("請輸入指揮官指令..."):
+    if user_input := st.chat_input("範例：新增需求：壽豐鄉中山路淹水，急需 5 台抽水機"):
         st.session_state.gov_chat.append({"role": "user", "content": user_input})
+
         with st.chat_message("user"):
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            # 💡 這裡為了 Hackathon Demo 的穩定性，我們採用「意圖關鍵字路由」結合動態資料
-            if "需求" in user_input and ("處理" in user_input or "核准" in user_input or "列出" in user_input):
-                pending = [d for d in st.session_state.demands if d.get("verification_status") == "pending" and can_gov_review(user, d)]
+            # 1. 政府 AI 助理：新增需求
+            if "新增需求" in user_input or "提出需求" in user_input or "建立需求" in user_input:
+                with st.spinner("AI 正在解析需求內容..."):
+                    result = extract_info_with_ai(raw_text=user_input)
+
+                if result.get("error") == "API_RATE_LIMIT":
+                    reply = "⚠️ AI 目前忙碌，請改用『個人設定與表單 → 填寫需求表單』手動建立。"
+                elif "error" in result:
+                    reply = f"❌ 需求解析失敗：{result.get('error')}"
+                else:
+                    extracted = result.get("data", result)
+                    item = extracted.get("item", "")
+                    qty = int(extracted.get("qty", 0) or 0)
+
+                    if not item or item in ["未知", "無", ""] or qty <= 0:
+                        reply = "⚠️ 無法辨識需求品項或數量，請輸入：新增需求：地點、品項、數量、緊急度。"
+                    else:
+                        record = {
+                            "id": make_id("D"),
+                            "time": now_str(),
+                            "source": "政府AI指揮官助理",
+                            "requester_id": user.get("id"),
+                            "requester_name": user.get("name"),
+                            "requester_email": user.get("email"),
+                            "district": extracted.get("district", user.get("district", "全區")),
+                            "village": extracted.get("village", user.get("village", "全區")),
+                            "location": extracted.get("location", user_input),
+                            "lat": extracted.get("lat", 23.8),
+                            "lon": extracted.get("lon", 121.0),
+                            "resource_type": extracted.get("resource_type", "有形資源"),
+                            "category": extracted.get("category", "其他"),
+                            "item": item,
+                            "qty": qty,
+                            "urgency": int(extracted.get("urgency", 4) or 4),
+                            "status": "未處理",
+                            "matched_provider": "",
+                            "verification_status": "verified",
+                            "verified_by": user.get("id"),
+                            "raw_text": user_input,
+                            "risk_flag": extracted.get("risk_flag", ""),
+                        }
+                        st.session_state.demands.insert(0, record)
+                        add_audit("政府AI新增需求", f"{record['id']} / {item} x {qty}")
+                        add_notification(f"🏛️ 政府新增需求：{item} x {qty}", "government_demand")
+                        reply = f"✅ 已由政府 AI 指揮官助理建立需求：**{item} x {qty}**，編號 `{record['id']}`。"
+
+                st.markdown(reply)
+                st.session_state.gov_chat.append({"role": "assistant", "content": reply})
+
+            # 2. 政府 AI 助理：新增供給
+            elif "新增供給" in user_input or "提供供給" in user_input or "建立供給" in user_input:
+                with st.spinner("AI 正在解析供給內容..."):
+                    result = extract_info_with_ai(raw_text=user_input)
+
+                if result.get("error") == "API_RATE_LIMIT":
+                    reply = "⚠️ AI 目前忙碌，請改用『個人設定與表單 → 填寫供給表單』手動建立。"
+                elif "error" in result:
+                    reply = f"❌ 供給解析失敗：{result.get('error')}"
+                else:
+                    extracted = result.get("data", result)
+                    item = extracted.get("item", "")
+                    qty = int(extracted.get("qty", 0) or 0)
+
+                    if not item or item in ["未知", "無", ""] or qty <= 0:
+                        reply = "⚠️ 無法辨識供給品項或數量，請輸入：新增供給：地點、品項、數量、提供者。"
+                    else:
+                        record = {
+                            "id": make_id("S"),
+                            "time": now_str(),
+                            "source": "政府AI指揮官助理",
+                            "provider_id": user.get("id"),
+                            "provider": extracted.get("provider") or user.get("name"),
+                            "provider_email": user.get("email"),
+                            "district": extracted.get("district", user.get("district", "全區")),
+                            "village": extracted.get("village", user.get("village", "全區")),
+                            "location_current": extracted.get("location_current") or extracted.get("location") or user.get("district"),
+                            "lat": extracted.get("lat", 23.8),
+                            "lon": extracted.get("lon", 121.0),
+                            "resource_type": extracted.get("resource_type", "有形資源"),
+                            "category": extracted.get("category", "其他"),
+                            "item": item,
+                            "qty": qty,
+                            "status": "可調派",
+                            "verification_status": "verified",
+                            "verified_by": user.get("id"),
+                            "raw_text": user_input,
+                            "risk_flag": extracted.get("risk_flag", ""),
+                        }
+                        st.session_state.supplies.insert(0, record)
+                        add_audit("政府AI新增供給", f"{record['id']} / {item} x {qty}")
+                        add_notification(f"🏛️ 政府新增供給：{item} x {qty}", "government_supply")
+                        reply = f"✅ 已由政府 AI 指揮官助理建立供給：**{item} x {qty}**，編號 `{record['id']}`。"
+
+                st.markdown(reply)
+                st.session_state.gov_chat.append({"role": "assistant", "content": reply})
+
+            # 3. 原本功能：處理需求
+            elif "需求" in user_input and ("處理" in user_input or "核准" in user_input or "列出" in user_input):
+                pending = [
+                    d for d in st.session_state.demands
+                    if d.get("verification_status") == "pending" and can_gov_review(user, d)
+                ]
+
                 if not pending:
                     reply = "報告長官，目前轄區內沒有待審核的需求。"
                 else:
-                    reply = f"報告長官，目前轄區有 **{len(pending)}** 筆待審核需求。\n經 AI 判定，全數符合「綠燈」安全標準。請問是否需要我為您**一鍵批次核准**？\n*(請點擊下方系統選單執行)*"
+                    reply = f"報告長官，目前轄區有 **{len(pending)}** 筆待審核需求。是否需要我為您一鍵批次核准？"
                     st.session_state.awaiting_action = "approve_all_demands"
+
                 st.markdown(reply)
                 st.session_state.gov_chat.append({"role": "assistant", "content": reply})
 
-            elif "抽水機" in user_input or "尋找" in user_input:
-                reply = "正在啟動 Llama-3 空間演算...\n\n報告長官，我找到最佳資源：\n- **來源**：吉普車救援隊 (花蓮市區)\n- **庫存**：3 台抽水機\n- **AI 建議**：距離災區僅 15 公里，且具備涉水運送能力，契合度 95 分。\n*(建議可至「✅ 需求與認領審核」頁面發送調度令)*"
+            # 4. 原本功能：尋找資源
+            elif "抽水機" in user_input or "尋找" in user_input or "搜尋" in user_input:
+                keyword = "抽水機" if "抽水機" in user_input else ""
+                available = [
+                    s for s in st.session_state.supplies
+                    if int(s.get("qty", 0)) > 0
+                    and s.get("status") not in ["已駁回", "已下架", "已指派 (無庫存)"]
+                    and (not keyword or keyword in str(s.get("item", "")))
+                ]
+
+                if available:
+                    s = available[0]
+                    reply = f"""報告長官，找到可用資源：
+
+- **來源**：{s.get('provider')}
+- **品項**：{s.get('item')}
+- **庫存**：{s.get('qty')}
+- **位置**：{s.get('location_current')}
+- **狀態**：{s.get('status')}
+"""
+                else:
+                    reply = "報告長官，目前供給池沒有找到符合條件的可用資源。"
+
                 st.markdown(reply)
                 st.session_state.gov_chat.append({"role": "assistant", "content": reply})
-                
+
+            # 5. 災情總結
+            elif "總結" in user_input or "狀況" in user_input or "摘要" in user_input:
+                area_demands = [d for d in st.session_state.demands if can_gov_review(user, d)]
+                area_supplies = [s for s in st.session_state.supplies if can_gov_review(user, s)]
+
+                high_urgency = [d for d in area_demands if int(d.get("urgency", 0) or 0) >= 4]
+                pending_review = [d for d in area_demands if d.get("verification_status") == "pending"]
+                unhandled = [d for d in area_demands if d.get("status") == "未處理"]
+
+                reply = f"""目前轄區戰情摘要：
+
+- 需求總數：**{len(area_demands)}** 筆
+- 供給總數：**{len(area_supplies)}** 筆
+- 高緊急需求：**{len(high_urgency)}** 筆
+- 待認證需求：**{len(pending_review)}** 筆
+- 未處理需求：**{len(unhandled)}** 筆
+
+建議優先處理高緊急度、已具體描述地點與數量的需求。
+"""
+                st.markdown(reply)
+                st.session_state.gov_chat.append({"role": "assistant", "content": reply})
+
             else:
-                reply = "收到指令。我正在持續監控轄區動態。如果需要處理「需求審核」或「資源調度」，請隨時吩咐。"
+                reply = "收到指令。您可以輸入：新增需求、新增供給、處理今日需求、尋找資源，或總結目前災情。"
                 st.markdown(reply)
                 st.session_state.gov_chat.append({"role": "assistant", "content": reply})
 
-    # 💡 結合 Agent 的行動按鈕 (Action Execution)
     if st.session_state.get("awaiting_action") == "approve_all_demands":
         if st.button("🚀 確認授權：一鍵核准所有安全需求", type="primary"):
-            pending = [d for d in st.session_state.demands if d.get("verification_status") == "pending" and can_gov_review(user, d)]
+            pending = [
+                d for d in st.session_state.demands
+                if d.get("verification_status") == "pending" and can_gov_review(user, d)
+            ]
             for d in pending:
                 d["verification_status"] = "verified"
                 d["verified_by"] = user["id"]
+
             st.session_state.awaiting_action = None
-            st.success(f"✅ 遵命！已為您秒速核准 {len(pending)} 筆需求。")
-            st.session_state.gov_chat.append({"role": "assistant", "content": f"✅ 已為您成功核准 {len(pending)} 筆需求。通知已同步發送給相關災民。"})
-            time.sleep(1.5)
+            st.success(f"✅ 已核准 {len(pending)} 筆需求。")
+            st.session_state.gov_chat.append({
+                "role": "assistant",
+                "content": f"✅ 已為您成功核准 {len(pending)} 筆需求。",
+            })
+            time.sleep(1)
             st.rerun()
 
 def page_my_demands():
