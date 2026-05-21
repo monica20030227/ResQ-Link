@@ -2018,9 +2018,9 @@ def page_company_supply_center():
                                     st.session_state.supplies.insert(0, record)
                                     reply = f"✅ **立案成功**！感謝提供：{item} x {qty}\n*(倉儲：{record['location_current']} ｜ AI 定位：{district})*"
                                 
-                       if "reply" in locals():
-                            st.markdown(reply)
-                            st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
+                    if "reply" in locals():
+                        st.markdown(reply)
+                        st.session_state.comp_supply_chat.append({"role": "assistant", "content": reply})
 
     # ==========================================
     # Tab 2: ERP 批次匯入
