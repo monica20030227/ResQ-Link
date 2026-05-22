@@ -933,7 +933,7 @@ def login_panel():
             with st.form("company_login_form"):
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    login_email = st.text_input("📧 企業聯絡信箱", value="company@example.com")
+                    login_email = st.text_input("📧 企業聯絡信箱", value="supply@example.com")
                     login_name = st.text_input("🏢 企業/組織名稱", value="統一企業")
                 with col_b:
                     login_district = st.text_input("📍 總部所在鄉鎮市區", value="台南市永康區")
@@ -979,10 +979,10 @@ def login_panel():
             with st.form("gov_login_form"):
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    login_email = st.text_input("📧 公務信箱", value="gov@example.com")
-                    login_name = st.text_input("👤 長官姓名/職稱", value="花蓮縣防災中心")
+                    login_email = st.text_input("📧 公務信箱", value="gov-shoufeng@gov.tw")
+                    login_name = st.text_input("👤 長官姓名/職稱", value="壽豐鄉公所承辦人")
                 with col_b:
-                    login_district = st.text_input("📍 管轄鄉鎮市區", value="花蓮縣")
+                    login_district = st.text_input("📍 管轄鄉鎮市區", value="花蓮縣壽豐鄉")
                     auth_code = st.text_input("🔑 公務授權碼", type="password", value="admin")
                 
                 submitted = st.form_submit_button("🛡️ 進入指揮中心", type="primary", use_container_width=True)
