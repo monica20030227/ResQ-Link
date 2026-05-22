@@ -1,6 +1,12 @@
 # ResQ-Link：可信任災害資源智慧調度平台
 > **ResQ-Link: Trusted AI-powered Disaster Resource Orchestration Platform**
 
+---
+
+## 平台連結：https://source-972vyqx8wwbw55tgkiwycs.streamlit.app/#x-10
+
+---
+
 ## 作品概念
 
 在大型災害（如地震、颱風、豪雨）發生時，災情資訊往往來自社群媒體、通訊群組、民眾通報與政府回報等多個來源，資訊格式混亂且高度分散，使第一線決策者難以快速掌握真實需求，導致資源調度延遲、供需錯配，甚至錯失黃金救援時間。
